@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-k8s-api
+  namespace: monitoring           # 加上這行，讓 API 跑在 monitoring namespace
+  labels:
+    app: my-k8s-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-k8s-api
+  template:
+    metadata:
+      labels:
+        app: my-k8s-api
+    spec:
+      containers:
+      - name: my-k8s-api
+        image: jhlin0925/my-k8s-api:1.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: PROMETHEUS_URL
+          value: "http://my-kube-prom-stack-kube-pr-prometheus:9090"
