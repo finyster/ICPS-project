@@ -1,12 +1,35 @@
-# 忽略 pyc 編譯檔
-*.pyc
+# Python
 __pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
 
-# 忽略 VSCode 設定
-.vscode/
-
-# 忽略虛擬環境
+# 虛擬環境
 venv/
+ENV/
+env/
+.venv/
 
-# 忽略環境變數檔
+# 編輯器與作業系統
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# dotenv 環境設定檔
 .env
+
+# FastAPI 上傳暫存檔（如有使用 File upload）
+uploads/
+tmp/
+
+# Jupyter（如有）
+.ipynb_checkpoints/
+
+# Docker（如使用）
+*.tar
+*.bak
