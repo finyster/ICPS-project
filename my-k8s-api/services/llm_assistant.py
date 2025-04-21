@@ -25,6 +25,20 @@ def _prom_query(q: str) -> dict:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+def _prom_query_range(q: str, start: str, end: str, step: str = "1h") -> dict:
+    try:
+        params = {
+            "query": q,
+            "start": start,
+            "end": end,
+            "step": step
+        }
+        r = requests.get(f"{PROMETHEUS_URL}/api/v1/query_range", params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 def get_pod_cpu_usage(namespace: str, pod: str, range_str: str = "[1h]") -> str:
     q = f'container_cpu_usage_seconds_total{{namespace="{namespace}",pod="{pod}"}}{range_str}'
     return json.dumps(_prom_query(q))
@@ -40,6 +54,38 @@ def get_top_cpu_pods(namespace: str, k: int = 3) -> str:
 def get_top_memory_pods(namespace: str, k: int = 3) -> str:
     q = f'topk({k}, sum by(pod)(container_memory_usage_bytes{{namespace="{namespace}"}}))'
     return json.dumps(_prom_query(q))
+
+def get_pod_resource_usage_over_time(namespace: str, pod: str, days: int = 7) -> str:
+    """Get CPU and memory usage for a pod over a period of days"""
+    end = "now()"
+    start = f"now()-{days}d"
+    
+    cpu_query = f'container_cpu_usage_seconds_total{{namespace="{namespace}",pod="{pod}"}}'
+    mem_query = f'container_memory_usage_bytes{{namespace="{namespace}",pod="{pod}"}}'
+    
+    cpu_data = _prom_query_range(cpu_query, start, end, "1h")
+    mem_data = _prom_query_range(mem_query, start, end, "1h")
+    
+    return json.dumps({
+        "cpu_usage": cpu_data,
+        "memory_usage": mem_data
+    })
+
+def get_namespace_resource_usage_over_time(namespace: str, days: int = 7) -> str:
+    """Get resource usage for all pods in a namespace over time"""
+    end = "now()"
+    start = f"now()-{days}d"
+    
+    cpu_query = f'sum by(pod)(rate(container_cpu_usage_seconds_total{{namespace="{namespace}"}}[5m]))'
+    mem_query = f'sum by(pod)(container_memory_usage_bytes{{namespace="{namespace}"}})'
+    
+    cpu_data = _prom_query_range(cpu_query, start, end, "1h")
+    mem_data = _prom_query_range(mem_query, start, end, "1h")
+    
+    return json.dumps({
+        "cpu_usage": cpu_data,
+        "memory_usage": mem_data
+    })
 
 TOOLS_DEF: List[dict] = [
     {
@@ -104,19 +150,59 @@ TOOLS_DEF: List[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_pod_resource_usage_over_time",
+            "description": "Get CPU and memory usage for a pod over a period of days",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string"},
+                    "pod": {"type": "string"},
+                    "days": {"type": "integer", "default": 7},
+                },
+                "required": ["namespace", "pod"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_namespace_resource_usage_over_time",
+            "description": "Get resource usage for all pods in a namespace over time",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string"},
+                    "days": {"type": "integer", "default": 7},
+                },
+                "required": ["namespace"]
+            },
+        },
+    },
 ]
 
 FUNC_MAP = {
-    "get_pod_cpu_usage":    get_pod_cpu_usage,
+    "get_pod_cpu_usage": get_pod_cpu_usage,
     "get_pod_memory_usage": get_pod_memory_usage,
-    "get_top_cpu_pods":     get_top_cpu_pods,
-    "get_top_memory_pods":  get_top_memory_pods,
+    "get_top_cpu_pods": get_top_cpu_pods,
+    "get_top_memory_pods": get_top_memory_pods,
+    "get_pod_resource_usage_over_time": get_pod_resource_usage_over_time,
+    "get_namespace_resource_usage_over_time": get_namespace_resource_usage_over_time,
 }
 
-SYSTEM_PROMPT = (
-    "You are a Kubernetes monitoring assistant. "
-    "Call functions when you need Prometheus data, then summarize the results."
-)
+SYSTEM_PROMPT = """You are a Kubernetes monitoring assistant. You can help users understand their cluster's resource usage patterns and trends.
+
+You can:
+1. Monitor specific pods' CPU and memory usage
+2. Find top resource-consuming pods
+3. Analyze namespace-wide resource usage
+4. Track resource usage over time
+5. Identify resource usage trends and growth rates
+
+Call appropriate functions to gather data, then provide clear, actionable insights based on the results.
+"""
 
 def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, Any]:
     """同步函式，不要用 await 呼叫"""
