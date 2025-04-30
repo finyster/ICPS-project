@@ -1,83 +1,195 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>K8s LLM Assistant</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-<link href="/static/chat.css" rel="stylesheet">
+    <meta charset="UTF-8">
+    <title>K8s Intelligent Monitoring Analyzer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <link href="/static/chat_styles.css" rel="stylesheet">
 </head>
 <body class="d-flex flex-column h-100">
 
-<nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-  <div class="container">
-    <a class="navbar-brand fw-bold" href="/">K8s Dashboard</a>
-    <span class="navbar-text text-white">LLM Assistant</span>
-  </div>
-</nav>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark shadow-sm">
+      <div class="container">
+        <div class="navbar-brand-ticker">
+          <a class="navbar-brand fw-bold" href="/">
+            <ul>
+              <li>K8s Dashboard</li>
+              <li>K8s Dashboard</li> </ul>
+          </a>
+        </div>
+        <span class="navbar-text text-white-50 ms-auto">Intelligent Monitoring Analyzer</span>
+      </div>
+    </nav>
 
-<!-- Chat container -->
-<main class="flex-grow-1">
-  <div id="chatWindow" class="container py-4">
-    <!-- 動態插入訊息 -->
-  </div>
-</main>
+    <main class="flex-grow-1 container py-4">
+      <div id="chatWindow">
+        <div class="d-flex mb-3 message-row message-ai align-items-end">
+            <img src="/static/ai-avatar.png" alt="AI Avatar" class="avatar"> <div class="bubble bubble-ai">
+                Hello! How can I help you monitor your Kubernetes cluster today?
+            </div>
+        </div>
+        </div>
+    </main>
 
-<!-- 底部輸入區 -->
-<footer class="bg-light border-top">
-  <div class="container py-3">
-    <form id="chatForm" class="d-flex gap-2">
-      <textarea id="msgInput" class="form-control" rows="1" placeholder="Ask me anything about your cluster…" required></textarea>
-      <button class="btn btn-primary px-4" type="submit">Send</button>
-    </form>
-  </div>
-</footer>
+    <footer class="bg-light border-top p-3 sticky-bottom shadow-top">
+      <div class="container">
+        <form id="chatForm" class="d-flex align-items-end gap-2">
+          <textarea id="msgInput" class="form-control" rows="1" placeholder="Ask about nodes, pods, usage..." required aria-label="Chat input"></textarea>
+          <button id="sendBtn" class="btn btn-primary send-button" type="submit" aria-label="Send message">
+            <i class="fas fa-paper-plane"></i>
+          </button>
+        </form>
+      </div>
+    </footer>
 
-<script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
-<script>
-(() => {
-  const chatWindow = document.getElementById('chatWindow');
-  const chatForm   = document.getElementById('chatForm');
-  const msgInput   = document.getElementById('msgInput');
+    <script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
+    <script>
+    (() => {
+      const chatWindow = document.getElementById('chatWindow');
+      const chatForm   = document.getElementById('chatForm');
+      const msgInput   = document.getElementById('msgInput');
+      const sendBtn    = document.getElementById('sendBtn');
 
-  let history = [];   // 前端暫存對話歷史 (不含 system)
+      let history = [];   // Store conversation history (excluding system prompt)
+      let isLoading = false; // Track loading state
 
-  chatForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const text = msgInput.value.trim();
-    if (!text) return;
-    appendBubble('user', text);
-    msgInput.value = '';
-    msgInput.style.height = '38px';
+      // --- Event Listeners ---
+      chatForm.addEventListener('submit', handleFormSubmit);
+      msgInput.addEventListener('input', autoResizeTextarea);
+      msgInput.addEventListener('keydown', handleEnterKey);
 
-    try {
-      const {data} = await axios.post('/api/llm_chat', {user_message: text, history});
-      appendBubble('assistant', data.assistant);
-      history = data.history;
-    } catch (err) {
-      appendBubble('assistant', '❌ Oops… server error, please retry.');
-    }
-  });
+      // --- Functions ---
+      async function handleFormSubmit(e) {
+        e.preventDefault();
+        if (isLoading) return; // Don't send if already loading
 
-  // 動態 textarea 高度
-  msgInput.addEventListener('input', () => {
-    msgInput.style.height = '38px';
-    msgInput.style.height = msgInput.scrollHeight + 'px';
-  });
+        const text = msgInput.value.trim();
+        if (!text) return;
 
-  function appendBubble(role, text) {
-    const div = document.createElement('div');
-    div.className = `d-flex mb-3 ${role === 'user' ? 'justify-content-end' : 'justify-content-start'}`;
+        appendBubble('user', text);
+        msgInput.value = '';
+        resetTextareaHeight();
 
-    const bubble = document.createElement('div');
-    bubble.className = `bubble ${role === 'user' ? 'bubble-user' : 'bubble-ai'}`;
-    bubble.textContent = text;
-    div.appendChild(bubble);
+        setLoadingState(true);
+        appendBubble('assistant', '', true); // Add loading indicator
 
-    chatWindow.appendChild(div);
-    // 自動捲到最底
-    window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
-  }
-})();
-</script>
+        try {
+          // Note: history might grow large. Consider truncation or other strategies for long convos.
+          const { data } = await axios.post('/api/llm_chat', { user_message: text, history });
+
+          removeLoadingBubble(); // Remove indicator first
+          appendBubble('assistant', data.assistant);
+          history = data.history; // Update history with the latest from backend
+
+        } catch (err) {
+          console.error("API Error:", err);
+          removeLoadingBubble();
+          appendBubble('assistant', '❌ Oops… An error occurred while contacting the server. Please check the console or try again.');
+        } finally {
+          setLoadingState(false);
+        }
+      }
+
+      function handleEnterKey(e) {
+        // Send message on Enter press, unless Shift+Enter is used for newline
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault(); // Prevent default Enter behavior (newline)
+          chatForm.requestSubmit(); // Trigger form submission
+        }
+      }
+
+      function setLoadingState(loading) {
+        isLoading = loading;
+        msgInput.disabled = loading;
+        sendBtn.disabled = loading;
+        sendBtn.classList.toggle('loading', loading);
+      }
+
+      function appendBubble(role, text, isLoadingBubble = false) {
+        const messageRow = document.createElement('div');
+        messageRow.className = `d-flex mb-3 message-row align-items-end ${role === 'user' ? 'message-user justify-content-end' : 'message-ai justify-content-start'}`;
+
+        // Add Avatar for AI messages
+        if (role === 'assistant') {
+          const avatar = document.createElement('img');
+          avatar.src = '/static/ai-avatar.png'; // Replace with your AI avatar path
+          avatar.alt = 'AI Avatar';
+          avatar.className = 'avatar';
+          messageRow.appendChild(avatar);
+        }
+
+        const bubble = document.createElement('div');
+        bubble.className = `bubble ${role === 'user' ? 'bubble-user' : 'bubble-ai'}`;
+
+        if (isLoadingBubble) {
+          messageRow.classList.add('loading-message'); // Add class for easy removal
+          // Gemini-like loading animation
+          bubble.innerHTML = `
+            <div class="typing-indicator">
+              <span></span><span></span><span></span>
+            </div>`;
+        } else {
+          // Basic Markdown rendering (bold, italics, code) - can be expanded
+          bubble.innerHTML = renderSimpleMarkdown(text);
+        }
+
+        messageRow.appendChild(bubble);
+        chatWindow.appendChild(messageRow);
+        scrollToBottom();
+      }
+
+      function removeLoadingBubble() {
+        const loadingElement = chatWindow.querySelector('.loading-message');
+        if (loadingElement) {
+          loadingElement.remove();
+        }
+      }
+
+       function renderSimpleMarkdown(text) {
+            if (!text) return '';
+            // Bold: **text** or __text__
+            text = text.replace(/\*\*(.*?)\*\*|__(.*?)__/g, '<strong>$1$2</strong>');
+            // Italics: *text* or _text_
+            text = text.replace(/\*(.*?)\*|_(.*?)_/g, '<em>$1$2</em>');
+            // Inline code: `code`
+            text = text.replace(/`(.*?)`/g, '<code>$1</code>');
+            // Basic code block: ```language\ncode\n``` (simple styling)
+             text = text.replace(/```(?:.*?)\n([\s\S]*?)\n```/g, '<pre><code>$1</code></pre>');
+            // Replace newline characters with <br> for HTML display
+            text = text.replace(/\n/g, '<br>');
+            return text;
+        }
+
+      function autoResizeTextarea() {
+        resetTextareaHeight();
+        // Set height based on scroll height, but limit max height
+        const maxHeight = 150; // Example max height in pixels
+        msgInput.style.height = Math.min(msgInput.scrollHeight, maxHeight) + 'px';
+      }
+
+      function resetTextareaHeight() {
+         msgInput.style.height = 'auto'; // Reset height first
+         // Get computed style to find base height accurately
+         const computedStyle = window.getComputedStyle(msgInput);
+         const baseHeight = parseFloat(computedStyle.paddingTop) + parseFloat(computedStyle.paddingBottom);
+         msgInput.style.height = baseHeight + 'px'; // Apply base height
+      }
+
+      function scrollToBottom() {
+        // Use timeout to ensure DOM is updated before scrolling
+        setTimeout(() => {
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            // Or scroll the chatWindow itself if it's the scrollable container:
+            // chatWindow.scrollTop = chatWindow.scrollHeight;
+        }, 10);
+      }
+
+      // Initial resize
+      resetTextareaHeight();
+
+    })();
+    </script>
+
 </body>
 </html>
