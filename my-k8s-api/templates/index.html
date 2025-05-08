@@ -1,256 +1,221 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark"><!-- Bootstrap 5.3 原生 dark 調色 -->
 <head>
-        <meta charset="UTF-8"/>
-        <title>K8s Pod Metrics</title>
-        <!-- Bootstrap CSS -->
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <style>
-            .table-container {
-                margin-top: 1rem;
-                overflow-x: auto;
-            }
-        </style>
-    </head>
-    <body>
-        <!-- 假設你的 Navbar 樣子類似這樣 -->
-        <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-            <div class="container">
-            <a class="navbar-brand fw-bold" href="/">K8s Dashboard</a>
-        
-            <!-- 其餘 nav-link ... -->
-        
-            <!-- 右側插入按鈕 -->
-            <div class="ms-auto">
-                <a href="/chat" class="btn btn-outline-light d-flex align-items-center gap-1">
-                <i class="bi bi-chat-dots-fill"></i>
-                Chat with LLM
-                </a>
-            </div>
-            </div>
-        </nav>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>K8s Intelligent Monitoring Analyzer</title>
+
+  <!-- ✓ Bootstrap & Icons (CDN) -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" rel="stylesheet">
   
-        <div class="container my-4">
-            <h1 class="text-center mb-4">K8s Pod Metrics Export</h1>
+  <!-- ✓ 主要客製化 -->
+  <style>
+  :root{
+    --bs-body-bg:#14161a;          /* 全站深灰底 */
+    --bs-body-color:#e5e5e5;       /* 亮灰字 */
+    --bs-dark-rgb:20,22,26;
+    --bubble-ai:#2b2d33;
+    --bubble-user:#0d6efd;
+  }
+  /* ---------- Navbar ---------- */
+  .navbar-brand img{height:38px}
+  /* ---------- Hero ---------- */
+  .hero{padding:7rem 1rem;background:linear-gradient(135deg,#0d6efd33 0%,#0d6efd05 60%);}
+  .hero h1{font-weight:700;font-size:clamp(2rem,5vw,3rem)}
+  /* ---------- Feature cards ---------- */
+  .feature-card{transition:.3s transform}
+  .feature-card:hover{transform:translateY(-6px)}
+  /* ---------- Chat ---------- */
+  #chatWindow{max-height:50vh;overflow-y:auto;padding-bottom:120px}
+  .avatar{width:40px;height:40px;border-radius:50%;object-fit:cover}
+  .bubble{border-radius:1rem;padding:.75rem 1rem;margin-bottom:.5rem;max-width:75%}
+  .bubble-ai{background:var(--bubble-ai)}
+  .bubble-user{background:var(--bubble-user)}
+  /* ---------- FAQ ---------- */
+  .faq-question{cursor:pointer}
+  .faq-answer{display:none}
+  /* ---------- Metrics ---------- */
+  .table-container{max-height:60vh;overflow:auto}
+  </style>
+</head>
 
-            <!-- Namespace/Pod 選擇區 -->
-            <div class="row g-3 mb-4">
-                <div class="col-12 col-sm-4">
-                    <label for="namespaceSelect" class="form-label fw-bold">Namespace</label>
-                    <select id="namespaceSelect" class="form-select" onchange="loadPods()">
-                    </select>
-                </div>
-                <div class="col-12 col-sm-4">
-                    <label for="podSelect" class="form-label fw-bold">Pod</label>
-                    <select id="podSelect" class="form-select">
-                    </select>
-                </div>
-                <div class="col-12 col-sm-4">
-                    <label for="timeRangeSelect" class="form-label fw-bold">Time Range</label>
-                    <select id="timeRangeSelect" class="form-select">
-                        <option value="5m">Last 5 min</option>
-                        <option value="1h" selected>Last 1 hour</option>
-                        <option value="1d">Last 1 day</option>
-                        <option value="2d">Last 2 days</option>
-                    </select>
-                </div>
-            </div>
+<body class="d-flex flex-column min-vh-100">
 
-            <!-- 下載 CSV 按鈕 -->
-            <div class="mb-4">
-                <button class="btn btn-primary" onclick="downloadCSV()">Download CSV</button>
-            </div>
+<!----------------  NAVBAR  ---------------->
+<nav class="navbar navbar-expand-lg bg-dark shadow-sm fixed-top">
+  <div class="container-fluid">
+    <a class="navbar-brand d-flex align-items-center gap-2" href="#">
+      <i class="fa-solid fa-gauge-high fa-lg text-primary"></i> K8s Dashboard
+    </a>
+    <button class="navbar-toggler" data-bs-toggle="collapse" data-bs-target="#navCollapse">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div id="navCollapse" class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+        <li class="nav-item"><a class="nav-link active" href="#features">Features</a></li>
+        <li class="nav-item"><a class="nav-link" href="#chat">Chat</a></li>
+        <li class="nav-item"><a class="nav-link" href="#metrics">Metrics</a></li>
+        <li class="nav-item"><a class="nav-link" href="#faq">FAQ</a></li>
+      </ul>
+    </div>
+  </div>
+</nav>
 
-            <hr/>
+<!----------------  HERO  ---------------->
+<section class="hero text-center text-white">
+  <div class="container">
+    <h1>Kubernetes Intelligent Monitoring Analyzer</h1>
+    <p class="lead">Real‑time insights, AI‑powered chat, and effortless observability.</p>
+    <a href="#chat" class="btn btn-primary btn-lg mt-3">Try the Chat</a>
+  </div>
+</section>
 
-            <!-- 查詢前 K 名 CPU 區域 -->
-            <div class="row g-3 mb-4 align-items-end">
-                <div class="col-auto">
-                    <label for="topKCpu" class="form-label fw-bold">Top K (CPU)</label>
-                    <input type="number" class="form-control" id="topKCpu" value="3" min="1" style="width:6em;">
-                </div>
-                <div class="col-auto">
-                    <button class="btn btn-success" onclick="loadTopCpu()">Get Top CPU Pods</button>
-                </div>
-            </div>
-
-            <div class="table-container">
-                <table class="table table-sm table-bordered table-striped" id="cpuResultTable" style="display:none;">
-                    <thead class="table-light">
-                        <tr>
-                            <th scope="col">#</th>
-                            <th scope="col">Pod</th>
-                            <th scope="col">CPU Usage (cores)</th>
-                            <th scope="col">CPU Usage (%)</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            </div>
-
-            <hr/>
-
-            <!-- 查詢前 K 名 Memory 區域 -->
-            <div class="row g-3 mb-4 align-items-end">
-                <div class="col-auto">
-                    <label for="topKMem" class="form-label fw-bold">Top K (Memory)</label>
-                    <input type="number" class="form-control" id="topKMem" value="3" min="1" style="width:6em;">
-                </div>
-                <div class="col-auto">
-                    <button class="btn btn-info" onclick="loadTopMemory()">Get Top Memory Pods</button>
-                </div>
-            </div>
-
-            <div class="table-container">
-                <table class="table table-sm table-bordered table-striped" id="memResultTable" style="display:none;">
-                    <thead class="table-light">
-                        <tr>
-                            <th scope="col">#</th>
-                            <th scope="col">Pod</th>
-                            <th scope="col">Memory Usage</th>
-                            <th scope="col">Memory Usage (%)</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-            </div>
+<!----------------  FEATURES  ---------------->
+<section id="features" class="container py-5">
+  <div class="row g-4">
+    <div class="col-md-4">
+      <div class="card bg-dark border-light feature-card h-100">
+        <div class="card-body text-center">
+          <i class="fa-solid fa-microchip fa-2xl text-primary mb-3"></i>
+          <h5 class="card-title">Resource Analytics</h5>
+          <p class="card-text small">Track CPU / Memory usage by namespace, pod or container with Prometheus metrics.</p>
         </div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card bg-dark border-light feature-card h-100">
+        <div class="card-body text-center">
+          <i class="fa-solid fa-robot fa-2xl text-primary mb-3"></i>
+          <h5 class="card-title">LLM Assistant</h5>
+          <p class="card-text small">Ask natural‑language questions and let the assistant run live PromQL queries for you.</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card bg-dark border-light feature-card h-100">
+        <div class="card-body text-center">
+          <i class="fa-solid fa-code-branch fa-2xl text-primary mb-3"></i>
+          <h5 class="card-title">Easy Integration</h5>
+          <p class="card-text small">Bootstrap, RESTful API and Grafana‑ready endpoints make extension a breeze.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
-        <!-- Bootstrap Bundle JS -->
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<!----------------  CHAT  ---------------->
+<section id="chat" class="container py-5">
+  <h2 class="mb-4 text-center">AI Chat</h2>
+  <div id="chatWindow" class="mb-3 bg-dark rounded p-3 shadow-sm"></div>
 
-        <script>
-            async function loadNamespaces() {
-                try {
-                    let res = await fetch('/api/namespaces');
-                    let data = await res.json();
-                    let nsSelect = document.getElementById('namespaceSelect');
-                    nsSelect.innerHTML = '';
-                    data.namespaces.forEach(ns => {
-                        let opt = document.createElement('option');
-                        opt.value = ns;
-                        opt.text = ns;
-                        nsSelect.appendChild(opt);
-                    });
-                    loadPods();
-                } catch (err) {
-                    alert('Failed to load namespaces. Check backend or RBAC.');
-                }
-            }
+  <form id="chatForm" class="d-flex gap-2">
+    <textarea id="msgInput" class="form-control" rows="1" placeholder="Ask about nodes, pods, usage..." required></textarea>
+    <button id="sendBtn" class="btn btn-primary"><i class="fas fa-paper-plane"></i></button>
+  </form>
+</section>
 
-            async function loadPods() {
-                let ns = document.getElementById('namespaceSelect').value;
-                if (!ns) return;
-                try {
-                    let res = await fetch('/api/pods?namespace=' + ns);
-                    let data = await res.json();
-                    let podSelect = document.getElementById('podSelect');
-                    podSelect.innerHTML = '';
-                    data.pods.forEach(pod => {
-                        let opt = document.createElement('option');
-                        opt.value = pod;
-                        opt.text = pod;
-                        podSelect.appendChild(opt);
-                    });
-                } catch (err) {
-                    alert('Failed to load pods. Check backend or RBAC.');
-                }
-            }
+<!----------------  METRICS  ---------------->
+<section id="metrics" class="container py-5">
+  <h2 class="mb-4 text-center">Pod Metrics</h2>
+  <div class="d-grid gap-2 d-md-flex mb-3 justify-content-md-end">
+    <button class="btn btn-outline-light" data-bs-toggle="collapse" data-bs-target="#metricsTable">
+      Toggle Metrics Table
+    </button>
+  </div>
 
-            function downloadCSV() {
-                let ns = document.getElementById('namespaceSelect').value;
-                let pod = document.getElementById('podSelect').value;
-                let rangeValue = document.getElementById('timeRangeSelect').value;
-                if (!ns || !pod) {
-                    alert('Please select Namespace and Pod first.');
-                    return;
-                }
-                let rangeParam = "[" + rangeValue + "]";
-                let url = `/api/export_csv?namespace=${ns}&pod=${pod}&range=${encodeURIComponent(rangeParam)}`;
-                window.location.href = url;
-            }
+  <div id="metricsTable" class="collapse table-container">
+    <!-- your existing table HTML can be injected here -->
+    <table class="table table-dark table-sm table-striped">
+      <thead><tr><th>#</th><th>Pod</th><th>CPU (cores)</th><th>Mem</th></tr></thead>
+      <tbody><tr><td colspan="4" class="text-center">Load data…</td></tr></tbody>
+    </table>
+  </div>
+</section>
 
-            async function loadTopCpu() {
-                let ns = document.getElementById('namespaceSelect').value;
-                let k = document.getElementById('topKCpu').value;
-                if (!ns) {
-                    alert('Please select a Namespace first.');
-                    return;
-                }
-                if (!k || parseInt(k) < 1) {
-                    alert('Top K value must be >= 1');
-                    return;
-                }
-                try {
-                    let res = await fetch(`/api/top_cpu?namespace=${ns}&k=${k}`);
-                    let data = await res.json();
-                    renderCpuTable(data.top_k);
-                } catch (err) {
-                    alert('Failed to load top CPU usage data.');
-                }
-            }
+<!----------------  FAQ  ---------------->
+<section id="faq" class="container py-5">
+  <h2 class="mb-4 text-center">FAQ</h2>
+  <div class="accordion accordion-flush" id="faqAccordion">
+    <div class="accordion-item bg-dark border-light">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed bg-dark text-white-50" data-bs-toggle="collapse" data-bs-target="#faq1">
+          How does the LLM fetch live metrics?
+        </button>
+      </h2>
+      <div id="faq1" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+        <div class="accordion-body text-white-50">
+          The assistant calls predefined tool functions that execute PromQL queries against Prometheus and returns JSON results.
+        </div>
+      </div>
+    </div>
+    <div class="accordion-item bg-dark border-light">
+      <h2 class="accordion-header">
+        <button class="accordion-button collapsed bg-dark text-white-50" data-bs-toggle="collapse" data-bs-target="#faq2">
+          Can I deploy this on any Kubernetes cluster?
+        </button>
+      </h2>
+      <div id="faq2" class="accordion-collapse collapse" data-bs-parent="#faqAccordion">
+        <div class="accordion-body text-white-50">
+          Yes. You only need Prometheus scraping kube‑state‑metrics & cadvisor, and expose its <code>/api</code> endpoint to the backend.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
-            function renderCpuTable(list) {
-                let table = document.getElementById('cpuResultTable');
-                let tbody = table.querySelector('tbody');
-                tbody.innerHTML = '';
+<!----------------  FOOTER  ---------------->
+<footer class="bg-dark mt-auto py-4 border-top border-secondary">
+  <div class="container text-center small">
+    <p class="mb-1 text-secondary">&copy; 2024 K8s Intelligent Monitoring Analyzer</p>
+    <a href="https://github.com/yourrepo" class="text-primary me-3"><i class="fab fa-github"></i></a>
+    <a href="mailto:dev@example.com" class="text-primary"><i class="fa-solid fa-envelope"></i></a>
+  </div>
+</footer>
 
-                table.style.display = list.length > 0 ? '' : 'none';
+<!-- ----------------  JS  ---------------- -->
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
 
-                list.forEach((item, idx) => {
-                    let tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td>${idx + 1}</td>
-                        <td>${item.pod}</td>
-                        <td>${item.cpu_usage_cores.toFixed(4)}</td>
-                        <td>${item.cpu_usage_percent.toFixed(2)}%</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
-            }
+<script>
+/* ---------- Chat logic（簡化版，保留你原本功能） ---------- */
+const $chatWin  = $('#chatWindow');
+const $msgInput = $('#msgInput');
+const $sendBtn  = $('#sendBtn');
+let history = [], isLoading=false;
 
-            async function loadTopMemory() {
-                let ns = document.getElementById('namespaceSelect').value;
-                let k = document.getElementById('topKMem').value;
-                if (!ns) {
-                    alert('Please select a Namespace first.');
-                    return;
-                }
-                if (!k || parseInt(k) < 1) {
-                    alert('Top K value must be >= 1');
-                    return;
-                }
-                try {
-                    let res = await fetch(`/api/top_memory?namespace=${ns}&k=${k}`);
-                    let data = await res.json();
-                    renderMemTable(data.top_k);
-                } catch (err) {
-                    alert('Failed to load top Memory usage data.');
-                }
-            }
+$('#chatForm').on('submit',async e=>{
+  e.preventDefault(); if(isLoading) return;
+  const text=$.trim($msgInput.val()); if(!text) return;
+  appendBubble('user',text); $msgInput.val('');
 
-            function renderMemTable(list) {
-                let table = document.getElementById('memResultTable');
-                let tbody = table.querySelector('tbody');
-                tbody.innerHTML = '';
+  isLoading=true; $sendBtn.prop('disabled',true);
+  appendBubble('assistant','',true); // loading
 
-                table.style.display = list.length > 0 ? '' : 'none';
+  try{
+    const {data}=await axios.post('/api/llm_chat',{user_message:text,history});
+    $('.loading-msg').remove();
+    appendBubble('assistant',data.assistant);
+    history=data.history;
+  }catch(err){
+    $('.loading-msg').remove();
+    appendBubble('assistant','❌ Server error, check console.');
+  }finally{
+    isLoading=false; $sendBtn.prop('disabled',false);
+  }
+});
 
-                list.forEach((item, idx) => {
-                    let tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td>${idx + 1}</td>
-                        <td>${item.pod}</td>
-                        <td>${item.memory_human_readable}</td>
-                        <td>${item.memory_usage_percent.toFixed(2)}%</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
-            }
-
-            window.onload = function() {
-                loadNamespaces();
-            }
-        </script>
-    </body>
+function appendBubble(role,text,loading=false){
+  const row=$('<div class="d-flex mb-2 '+(role==='user'?'justify-content-end':'')+'"></div>');
+  if(role==='assistant'){
+    row.append(`<img class="avatar me-2" src="https://cdn-icons-png.flaticon.com/512/4712/4712109.png">`);
+  }
+  const bubble=$('<div class="bubble '+(role==='user'?'bubble-user':'bubble-ai')+'"></div>');
+  if(loading){bubble.addClass('loading-msg').html('<span class="spinner-border spinner-border-sm"></span>');}
+  else      {bubble.text(text);}
+  row.append(bubble); $chatWin.append(row)[0].scrollTop=$chatWin[0].scrollHeight;
+}
+</script>
+</body>
 </html>

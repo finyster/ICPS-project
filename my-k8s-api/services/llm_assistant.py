@@ -4,6 +4,15 @@ import os, json, requests
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 from groq import Groq
+from typing import Optional
+from pydantic import BaseModel
+import re
+from datetime import datetime, timedelta
+
+
+class ChatResponse(BaseModel):
+    assistant: Optional[str]
+    history: List[dict]
 
 load_dotenv()
 
@@ -39,20 +48,22 @@ def _prom_query_range(q: str, start: str, end: str, step: str = "1h") -> dict:
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-def get_pod_cpu_usage(namespace: str, pod: str, range_str: str = "[1h]") -> str:
+def get_pod_cpu_usage(namespace: str, pod: str, range_str: str = "[1h]",**kwargs) -> str:
     q = f'container_cpu_usage_seconds_total{{namespace="{namespace}",pod="{pod}"}}{range_str}'
     return json.dumps(_prom_query(q))
 
-def get_pod_memory_usage(namespace: str, pod: str, range_str: str = "[1h]") -> str:
+def get_pod_memory_usage(namespace: str, pod: str, range_str: str = "[1h]", **kwargs) -> str:
     q = f'container_memory_usage_bytes{{namespace="{namespace}",pod="{pod}"}}{range_str}'
     return json.dumps(_prom_query(q))
 
-def get_top_cpu_pods(namespace: str, k: int = 3) -> str:
+def get_top_cpu_pods(namespace: str, k: int = 3, **kwargs) -> str:
     q = f'topk({k}, sum by(pod)(rate(container_cpu_usage_seconds_total{{namespace="{namespace}"}}[5m])))'
+    print(f"[DEBUG] get_top_cpu_pods called with namespace={namespace}, k={k}, extra={kwargs}")
     return json.dumps(_prom_query(q))
 
-def get_top_memory_pods(namespace: str, k: int = 3) -> str:
+def get_top_memory_pods(namespace: str, k: int = 3, **kwargs) -> str:
     q = f'topk({k}, sum by(pod)(container_memory_usage_bytes{{namespace="{namespace}"}}))'
+    print(f"[DEBUG] get_top_cpu_pods called with namespace={namespace}, k={k}, extra={kwargs}")
     return json.dumps(_prom_query(q))
 
 def get_pod_resource_usage_over_time(namespace: str, pod: str, days: int = 7) -> str:
@@ -71,7 +82,7 @@ def get_pod_resource_usage_over_time(namespace: str, pod: str, days: int = 7) ->
         "memory_usage": mem_data
     })
 
-def get_namespace_resource_usage_over_time(namespace: str, days: int = 7) -> str:
+def get_namespace_resource_usage_over_time(namespace: str, days: int = 7, **kwargs) -> str:
     """Get resource usage for all pods in a namespace over time"""
     end = "now()"
     start = f"now()-{days}d"
@@ -86,6 +97,67 @@ def get_namespace_resource_usage_over_time(namespace: str, days: int = 7) -> str
         "cpu_usage": cpu_data,
         "memory_usage": mem_data
     })
+
+'''
+新的兩隻工具
+'''
+def query_resource(level: str, target: str, metric: str, duration: str) -> str:
+    """
+    查詢 pod / node / namespace 的 CPU 或記憶體使用量，支援範圍時間驗證。
+    支援格式：30m, 1h, 2d, 1mo（最多 10mo）
+    """
+    # 驗證 duration 格式
+    match = re.match(r"^(\d+)(m|h|d|mo)$", duration)
+    if not match:
+        return json.dumps({"error": "Invalid duration format. Use formats like 30m, 1h, 2d, 1mo"})
+
+    value, unit = match.groups()
+    value = int(value)
+    
+    if unit == "mo" and value > 10:
+        return json.dumps({"error": "Max supported duration is 10mo"})
+
+    now = datetime.utcnow()
+    if unit == "mo":
+        delta = timedelta(days=30 * value)
+    elif unit == "d":
+        delta = timedelta(days=value)
+    elif unit == "h":
+        delta = timedelta(hours=value)
+    elif unit == "m":
+        delta = timedelta(minutes=value)
+    else:
+        return json.dumps({"error": "Unsupported time unit"})
+
+    start = int((now - delta).timestamp())
+    end = int(now.timestamp())
+    step = "1h"  # 固定步進
+
+    if level == "pod":
+        query = f'container_{metric}_usage_seconds_total{{pod="{target}"}}'
+    elif level == "node":
+        query = f'node_{metric}_usage_seconds_total{{node="{target}"}}'
+    elif level == "namespace":
+        query = f'container_{metric}_usage_seconds_total{{namespace="{target}"}}'
+    else:
+        return json.dumps({"error": f"Unsupported level: {level}"})
+
+    result = _prom_query_range(query, start, end, step)
+    return json.dumps(result)
+
+def top_k_pods(namespace: str, metric: str, k: int = 3, duration: str = "5m") -> str:
+    """
+    回傳某 namespace 內，CPU 或記憶體使用最高的前 K 個 pod。
+    """
+    if metric not in ("cpu", "memory"):
+        return json.dumps({"error": "Invalid metric. Use 'cpu' or 'memory'"})
+
+    if metric == "cpu":
+        query = f'topk({k}, sum by(pod)(rate(container_cpu_usage_seconds_total{{namespace="{namespace}"}}[{duration}])))'
+    else:
+        query = f'topk({k}, sum by(pod)(container_memory_usage_bytes{{namespace="{namespace}"}}))'
+
+    return json.dumps(_prom_query(query))
 
 TOOLS_DEF: List[dict] = [
     {
@@ -154,17 +226,17 @@ TOOLS_DEF: List[dict] = [
         "type": "function",
         "function": {
             "name": "get_pod_resource_usage_over_time",
-            "description": "Get CPU and memory usage for a pod over a period of days",
+            "description": "Get CPU and memory usage for a pod over the past N days",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "namespace": {"type": "string"},
-                    "pod": {"type": "string"},
-                    "days": {"type": "integer", "default": 7},
+                    "pod":       {"type": "string"},
+                    "days":      {"type": "integer"}
                 },
-                "required": ["namespace", "pod"]
-            },
-        },
+                "required": ["namespace","pod","days"]
+            }
+        }
     },
     {
         "type": "function",
@@ -181,6 +253,58 @@ TOOLS_DEF: List[dict] = [
             },
         },
     },
+    {
+        "type": "function",           # 👈 加這行
+        "function": {
+            "name": "get_pod_resource_usage_over_time",
+            "description": "Get CPU and memory usage for a pod over the past N days",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "namespace": {"type": "string"},
+                    "pod":       {"type": "string"},
+                    "days":      {"type": "integer"}
+                },
+                "required": ["namespace", "pod", "days"]
+            }
+        }
+    },
+
+
+    {
+        "type": "function",
+        "function": {
+        "name": "query_resource",
+        "description": "Query CPU or Memory usage for pod / node / namespace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+            "level":   { "type": "string", "enum": ["pod", "node", "namespace"] },
+            "target":  { "type": "string", "description": "pod name, node name, or namespace name" },
+            "metric":  { "type": "string", "enum": ["cpu", "memory"] },
+            "duration":{ "type": "string", "description": "look‑back window like 30m, 4h, 2d, 1mo (max 10mo)" }
+            },
+            "required": ["level","target","metric","duration"]
+        }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+        "name": "top_k_pods",
+        "description": "Return the Top‑K pods by CPU or Memory in a namespace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+            "namespace": { "type": "string" },
+            "metric":    { "type": "string", "enum": ["cpu", "memory"] },
+            "k":         { "type": "integer", "default": 3, "minimum": 1 },
+            "duration":  { "type": "string", "default": "5m" }
+            },
+            "required": ["namespace", "metric"]
+        }
+        }
+    }
 ]
 
 FUNC_MAP = {
@@ -190,6 +314,9 @@ FUNC_MAP = {
     "get_top_memory_pods": get_top_memory_pods,
     "get_pod_resource_usage_over_time": get_pod_resource_usage_over_time,
     "get_namespace_resource_usage_over_time": get_namespace_resource_usage_over_time,
+     # ─── 新 2 支 ───
+    "query_resource": query_resource,
+    "top_k_pods":     top_k_pods,
 }
 
 SYSTEM_PROMPT = """You are a Kubernetes monitoring assistant. You can help users understand their cluster's resource usage patterns and trends.
@@ -203,10 +330,17 @@ You can:
 
 Call appropriate functions to gather data, then provide clear, actionable insights based on the results.
 """
+MAX_HISTORY_LEN = 20   # 依需要調
+
+def prune_history(hist: list[dict]) -> list[dict]:
+    """只保留最近 MAX_HISTORY_LEN 句對話"""
+    if len(hist) > MAX_HISTORY_LEN:
+        return hist[-MAX_HISTORY_LEN:]
+    return hist
 
 def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, Any]:
     """同步函式，不要用 await 呼叫"""
-    history = history or []
+    history = prune_history(history or [])
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
     messages.append({"role": "user", "content": user_message})
 
@@ -221,7 +355,7 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
     assistant_msg = resp.choices[0].message
 
     # 先取出 tool_calls
-    tool_calls = getattr(assistant_msg, "tool_calls", [])
+    tool_calls = getattr(assistant_msg, "tool_calls", None) or []
     messages.append({
         "role": "assistant",
         "content": assistant_msg.content,
@@ -253,6 +387,10 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
         final_msg = resp2.choices[0].message
         messages.append({"role": "assistant", "content": final_msg.content})
 
-    # 返回給前端：去除 system
+    # 返回給前端：去除 system，並確保 assistant 回應不為 None
     front_history = [m for m in messages if m["role"] != "system"]
-    return {"assistant": messages[-1]["content"], "history": front_history}
+    last_msg = messages[-1]
+    assistant_content = last_msg.get("content") or "[Error: No response generated from the assistant.]"
+    
+    return {"assistant": assistant_content, "history": front_history}
+

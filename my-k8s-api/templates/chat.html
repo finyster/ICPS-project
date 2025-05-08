@@ -1,3 +1,4 @@
+<!-- my-k8s-api/templates/chat.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -25,7 +26,7 @@
     <main class="flex-grow-1 container py-4">
       <div id="chatWindow">
         <div class="d-flex mb-3 message-row message-ai align-items-end">
-            <img src="/static/ai-avatar.png" alt="AI Avatar" class="avatar"> <div class="bubble bubble-ai">
+          <img src="https://cdn-icons-png.flaticon.com/512/4712/4712109.png" alt="AI Avatar" class="avatar" style="width: 64px; height: 64px;""><div class="bubble bubble-ai">
                 Hello! How can I help you monitor your Kubernetes cluster today?
             </div>
         </div>
@@ -113,9 +114,11 @@
         // Add Avatar for AI messages
         if (role === 'assistant') {
           const avatar = document.createElement('img');
-          avatar.src = '/static/ai-avatar.png'; // Replace with your AI avatar path
+          avatar.src = 'https://cdn-icons-png.flaticon.com/512/4712/4712109.png';
           avatar.alt = 'AI Avatar';
           avatar.className = 'avatar';
+          avatar.style.width = '48px';
+          avatar.style.height = '48px'; // 可略掉讓圖片等比縮放
           messageRow.appendChild(avatar);
         }
 
