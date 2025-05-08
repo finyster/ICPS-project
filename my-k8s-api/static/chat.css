@@ -1,0 +1,226 @@
+/* static/chat_styles.css */
+
+/* --- Base & Body --- */
+:root {
+  --user-bubble-bg: linear-gradient(135deg, #007bff, #0056b3);
+  --ai-bubble-bg: #e9ecef; /* Lighter grey */
+  --ai-bubble-text: #212529;
+  --user-bubble-text: #ffffff;
+  --body-bg: #f8f9fa; /* Slightly off-white */
+  --navbar-bg: #343a40; /* Darker navbar */
+  --input-bg: #ffffff;
+  --border-color: #dee2e6;
+  --shadow-color: rgba(0, 0, 0, 0.075);
+  --primary-color: #0d6efd;
+  --hover-primary-color: #0b5ed7;
+  --active-primary-color: #0a58ca;
+}
+
+body {
+  background-color: var(--body-bg);
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  color: #333;
+}
+
+/* --- Navbar Enhancements --- */
+.navbar {
+  background-color: var(--navbar-bg) !important; /* Override Bootstrap */
+}
+
+.navbar-brand-ticker {
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 200px; /* Adjust width as needed */
+}
+
+.navbar-brand-ticker a {
+  text-decoration: none;
+}
+
+.navbar-brand-ticker ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: inline-block; /* Important for animation */
+  animation: marquee 10s linear infinite; /* Adjust duration for speed */
+}
+
+.navbar-brand-ticker li {
+  display: inline-block; /* Make list items inline */
+  padding-right: 50px; /* Space between repetitions */
+}
+
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); } /* Scroll exactly one repetition width */
+}
+
+.navbar-text {
+    font-size: 0.9rem;
+}
+
+/* --- Chat Window & Bubbles --- */
+#chatWindow {
+  padding-bottom: 120px; /* Space for the sticky footer */
+}
+
+.message-row {
+    width: 100%;
+}
+
+.avatar {
+  width: 35px;
+  height: 35px;
+  border-radius: 50%;
+  margin-right: 10px; /* Space between avatar and bubble */
+  margin-bottom: 5px; /* Align with bottom of bubble */
+  object-fit: cover; /* Ensure image covers the area */
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+
+.message-user {
+    /* No avatar needed typically for user, bubble aligns right */
+}
+
+.bubble {
+  max-width: 75%;
+  padding: 0.8rem 1.1rem;
+  border-radius: 1.2rem; /* More rounded */
+  font-size: 1rem;
+  line-height: 1.5;
+  word-wrap: break-word; /* Ensure long words break */
+  box-shadow: 0 2px 5px var(--shadow-color);
+  position: relative; /* Needed for potential pseudo-elements like tails */
+   white-space: normal; /* Override bootstrap potentially */
+}
+
+/* User Bubble */
+.bubble-user {
+  background: var(--user-bubble-bg);
+  color: var(--user-bubble-text);
+  border-bottom-right-radius: 0.3rem; /* Tail effect */
+}
+
+/* AI Bubble */
+.bubble-ai {
+  background: var(--ai-bubble-bg);
+  color: var(--ai-bubble-text);
+  border-bottom-left-radius: 0.3rem; /* Tail effect */
+}
+
+/* Basic Markdown/Code Styling */
+.bubble code {
+    background-color: rgba(0, 0, 0, 0.06);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    font-size: 0.9em;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+.bubble pre {
+    background-color: #333; /* Dark background for code blocks */
+    color: #f1f1f1;
+    padding: 1rem;
+    border-radius: 8px;
+    overflow-x: auto; /* Allow horizontal scrolling for long code lines */
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.bubble pre code {
+    background-color: transparent; /* Override inline code style */
+    padding: 0;
+    font-size: 0.9em;
+}
+
+/* --- Loading Indicator (Gemini Style) --- */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 0; /* Adjust padding as needed */
+}
+
+.typing-indicator span {
+  height: 8px;
+  width: 8px;
+  background-color: #aaa; /* Adjust color */
+  border-radius: 50%;
+  display: inline-block;
+  margin: 0 3px;
+  animation: typing 1.4s infinite ease-in-out both;
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0s; }
+
+@keyframes typing {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1.0); }
+}
+
+
+/* --- Input Area & Send Button --- */
+footer {
+  box-shadow: 0 -2px 5px var(--shadow-color); /* Add shadow to top */
+}
+
+#msgInput {
+  resize: none; /* Disable manual resize handle */
+  overflow-y: auto; /* Add scroll if max-height is reached */
+  line-height: 1.5;
+  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  border-color: var(--border-color);
+  background-color: var(--input-bg);
+  min-height: 42px; /* Ensure minimum height */
+}
+
+#msgInput:focus {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25); /* Bootstrap focus style */
+}
+
+.send-button {
+    min-width: 50px; /* Ensure button has width */
+    height: 42px; /* Match input height */
+    font-size: 1.1rem; /* Icon size */
+    border-radius: 0.5rem; /* Slightly rounded */
+    background-color: var(--primary-color);
+    border: 1px solid var(--primary-color);
+    color: white;
+    transition: all 0.15s ease-out;
+    box-shadow: 3px 3px 5px 0px rgba(0, 0, 0, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.send-button:hover {
+    background-color: var(--hover-primary-color);
+    border-color: var(--hover-primary-color);
+    box-shadow: 4px 4px 6px 0px rgba(0, 0, 0, 0.2);
+    transform: translateY(-1px); /* Subtle lift */
+}
+
+.send-button:active {
+    background-color: var(--active-primary-color);
+    border-color: var(--active-primary-color);
+    box-shadow: 1px 1px 2px 0px rgba(0, 0, 0, 0.15); /* Reduce shadow */
+    transform: translate(1px, 1px); /* Push down effect */
+}
+
+.send-button:disabled,
+.send-button.loading {
+    opacity: 0.65;
+    cursor: not-allowed;
+    box-shadow: none;
+    transform: none;
+    background-color: var(--primary-color); /* Keep base color */
+    border-color: var(--primary-color);
+}
+
+/* --- Utility --- */
+.shadow-top {
+    box-shadow: 0 -4px 6px -1px rgba(0, 0, 0, 0.05), 0 -2px 4px -1px rgba(0, 0, 0, 0.03);
+}

@@ -1,0 +1,11 @@
+類型 | Prompt（複製即可）
+Top‑K CPU | show top 3 cpu pods in default
+Top‑K Memory | 列出 kube‑system namespace 佔記憶體最多的前 5 pods
+單一 Pod CPU | Tell me the CPU usage of pod nginx‑6789df in namespace default over the last 30 minutes
+單一 Pod Memory | 查詢 namespace=logging 裡的 pod fluent‑bit‑0 記憶體使用量（過去 2 小時）
+中文摘要 | 幫我用一句話總結 default namespace 中前 3 記憶體耗用量最大的 pods
+英語追問 | after previous answer → Can you also give me their CPU usage?
+歷史比較 | Compare the top 3 CPU‑heavy pods in default between now and 24 hours ago. What changed?
+問建議 | 根據目前的 CPU/Memory 資料，建議我 2 個可以調整資源限制的 pod
+快速健康檢查 | default namespace 有沒有 CPU 或記憶體暴衝的 pod？用一句話告訴我
+教學型 | Prometheus 查詢 container_memory_usage_bytes 代表什麼？幫我解釋並舉例
