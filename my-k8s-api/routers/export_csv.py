@@ -1,3 +1,4 @@
+#my-k8s-api/routers/export_csv.py
 import csv
 import io
 from datetime import datetime
@@ -13,6 +14,9 @@ def export_csv(namespace: str, pod: str, range: str = "[1h]"):
     """
     針對特定 namespace + pod，抓取 CPU/Memory (range vector)，合併後輸出 CSV。
     """
+    if not range.startswith("["):
+        range = f"[{range}]"
+        
     cpu_metric = "container_cpu_usage_seconds_total"
     mem_metric = "container_memory_usage_bytes"
 

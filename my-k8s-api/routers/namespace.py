@@ -1,3 +1,4 @@
+#my-k8s-api/routers/namespace.py
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from services.k8s_utils import list_all_namespaces

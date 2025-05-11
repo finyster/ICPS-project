@@ -115,22 +115,42 @@
   </form>
 </section>
 
-<!----------------  METRICS  ---------------->
+<!-- ----------  METRICS  ---------- -->
 <section id="metrics" class="container py-5">
-  <h2 class="mb-4 text-center">Pod Metrics</h2>
-  <div class="d-grid gap-2 d-md-flex mb-3 justify-content-md-end">
-    <button class="btn btn-outline-light" data-bs-toggle="collapse" data-bs-target="#metricsTable">
-      Toggle Metrics Table
-    </button>
-  </div>
-
-  <div id="metricsTable" class="collapse table-container">
-    <!-- your existing table HTML can be injected here -->
-    <table class="table table-dark table-sm table-striped">
-      <thead><tr><th>#</th><th>Pod</th><th>CPU (cores)</th><th>Mem</th></tr></thead>
-      <tbody><tr><td colspan="4" class="text-center">Load data…</td></tr></tbody>
-    </table>
-  </div>
+    <h2 class="mb-4 text-center">Pod Metrics</h2>
+  
+    <!-- Namespace 選單與 Refresh -->
+    <div class="row g-3 align-items-end mb-3">
+      <div class="col-auto">
+        <label class="form-label text-secondary small mb-0">Namespace</label>
+        <select id="nsSelect" class="form-select form-select-sm bg-dark text-white"></select>
+      </div>
+      <div class="col-auto">
+        <button id="refreshBtn" class="btn btn-outline-light btn-sm">
+          <i class="fa-solid fa-rotate-right"></i> Refresh
+        </button>
+      </div>
+      <div class="col-auto ms-auto">
+        <button class="btn btn-outline-light btn-sm" data-bs-toggle="collapse" data-bs-target="#metricsWrap">
+          Toggle Metrics Table
+        </button>
+      </div>
+    </div>
+  
+    <!-- 表格 -->
+    <div id="metricsWrap" class="collapse show table-container">
+      <table class="table table-dark table-sm table-striped align-middle mb-0">
+        <thead class="sticky-top bg-dark">
+          <tr>
+            <th>#</th><th>Pod</th><th>CPU (cores/s)</th><th>Mem (MiB)</th>
+            <th>Disk (MiB)</th><th>Rx (KB/s)</th><th>Tx (KB/s)</th><th>Ready</th>
+          </tr>
+        </thead>
+        <tbody id="metricsBody">
+          <tr><td colspan="8" class="text-center text-secondary">Load data…</td></tr>
+        </tbody>
+      </table>
+    </div>
 </section>
 
 <!----------------  FAQ  ---------------->
@@ -217,5 +237,67 @@ function appendBubble(role,text,loading=false){
   row.append(bubble); $chatWin.append(row)[0].scrollTop=$chatWin[0].scrollHeight;
 }
 </script>
+
+<script>
+    /* ---------- Pod Metrics ---------- */
+    const $nsSelect   = $('#nsSelect');
+    const $refreshBtn = $('#refreshBtn');
+    const $metricsBody= $('#metricsBody');
+    
+    /* ① 載入 namespaces */
+    async function loadNamespaces(){
+      try{
+        const {data} = await axios.get('/api/namespaces');
+        $nsSelect.empty();
+        data.namespaces.forEach(ns =>
+          $nsSelect.append(`<option value="${ns}">${ns}</option>`));
+      }catch(e){
+        $nsSelect.html('<option>(error)</option>');
+      }
+    }
+    
+    /* ② 載入 Pod metrics */
+    async function loadMetrics(){
+      const ns=$nsSelect.val();
+      if(!ns) return;
+      $metricsBody.html('<tr><td colspan="8" class="text-center text-secondary">Loading…</td></tr>');
+      try{
+        const {data:rows}=await axios.get('/api/pod_metrics',{params:{namespace:ns}});
+        if(!rows.length){
+          $metricsBody.html('<tr><td colspan="8" class="text-center text-secondary">No data</td></tr>');
+          return;
+        }
+        $metricsBody.empty();
+        rows.forEach((r,i)=>{
+          $metricsBody.append(`
+            <tr>
+              <td>${i+1}</td>
+              <td class="text-break">${r.pod}</td>
+              <td>${r.cpu.toFixed(4)}</td>
+              <td>${r.mem.toFixed(1)}</td>
+              <td>${r.disk.toFixed(1)}</td>
+              <td>${r.net_rx.toFixed(1)}</td>
+              <td>${r.net_tx.toFixed(1)}</td>
+              <td>${r.ready ? '<span class="text-success">✔</span>' :
+                              '<span class="text-danger">✘</span>'}</td>
+            </tr>`);
+        });
+      }catch(err){
+        console.error(err);
+        $metricsBody.html('<tr><td colspan="8" class="text-center text-danger">Load error</td></tr>');
+      }
+    }
+    
+    /* ③ 綁定事件 */
+    $refreshBtn.on('click', loadMetrics);
+    $nsSelect.on('change',  loadMetrics);
+    
+    /* ④ 首次載入 */
+    (async ()=>{
+      await loadNamespaces();
+      await loadMetrics();
+    })();
+</script>
+    
 </body>
 </html>

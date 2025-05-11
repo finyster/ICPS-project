@@ -10,3 +10,39 @@
 | **Optimization Suggestion**  | Based on the current CPU and memory data, suggest 2 pods that might need resource limit adjustments.     |
 | **Health Check**             | Are there any pods in the `default` namespace with CPU or memory spikes? Give me a one-sentence summary. |
 | **Educational / Teaching**   | What does the Prometheus query `container_memory_usage_bytes` represent? Explain it with an example.     |
+Can you generate a CSV report of the CPU and Memory usage for the pod busybox-cpu in the default namespace over the last 2 days?
+01. What is the CPU usage of pod `busybox-cpu` in the `default` namespace?
+02. What is the CPU usage of pod `echo` in the `default` namespace?
+03. What is the CPU usage of pod `nginx-676b6c5bbc-ww4xk` in the `default` namespace?
+04. What is the CPU usage of pod `coredns-6f6b679f8f-s6x47` in the `kube-system` namespace?
+05. What is the CPU usage of pod `etcd-minikube` in the `kube-system` namespace?
+06. What is the CPU usage of pod `alertmanager-my-kube-prom-stack-kube-pr-alertmanager-0` in the `monitoring` namespace?
+07. What is the CPU usage of pod `my-kube-prom-stack-grafana-7cc9f485fc-zc2hx` in the `monitoring` namespace?
+08. What is the CPU usage of pod `prometheus-my-kube-prom-stack-kube-pr-prometheus-0` in the `monitoring` namespace?
+09. Tell me the memory usage of pod `busybox-cpu` in namespace `default` over the last 2 hours.
+10. Tell me the memory usage of pod `echo` in namespace `default` over the last 2 hours.
+11. Tell me the memory usage of pod `nginx-676b6c5bbc-ww4xk` in namespace `default` over the last 2 hours.
+12. Tell me the memory usage of pod `coredns-6f6b679f8f-s6x47` in namespace `kube-system` over the last 2 hours.
+13. Tell me the memory usage of pod `etcd-minikube` in namespace `kube-system` over the last 2 hours.
+14. Tell me the memory usage of pod `alertmanager-my-kube-prom-stack-kube-pr-alertmanager-0` in namespace `monitoring` over the last 2 hours.
+15. Tell me the memory usage of pod `my-kube-prom-stack-grafana-7cc9f485fc-zc2hx` in namespace `monitoring` over the last 2 hours.
+16. Tell me the memory usage of pod `prometheus-my-kube-prom-stack-kube-pr-prometheus-0` in namespace `monitoring` over the last 2 hours.
+17. Which pods in namespace `default` are using the most CPU right now?
+18. Which pods in namespace `kube-system` are using the most CPU right now?
+19. Which pods in namespace `monitoring` are using the most CPU right now?
+20. List the top 3 memory-consuming pods in `default`.
+21. List the top 3 memory-consuming pods in `kube-system`.
+22. List the top 3 memory-consuming pods in `monitoring`.
+23. Show me the CPU and memory usage trend for `busybox-cpu` in `default` over the past 5 days.
+24. Show me the CPU and memory usage trend for `coredns-6f6b679f8f-s6x47` in `kube-system` over the past 5 days.
+25. Show me the CPU and memory usage trend for `alertmanager-my-kube-prom-stack-kube-pr-alertmanager-0` in `monitoring` over the past 5 days.
+26. Give me the total resource usage for namespace `default` for the past 7 days.
+27. Give me the total resource usage for namespace `kube-system` for the past 7 days.
+28. Give me the total resource usage for namespace `monitoring` for the past 7 days.
+29. Query the CPU usage for pod `echo` in `default` over the past 2d.
+30. Check total memory usage for all pods in `monitoring` in the last 4h.
+31. Tell me the CPU usage trend for the whole `kube-system` namespace over the past 30m.
+32. Find the top 5 pods by CPU in namespace `monitoring` during the last 10 minutes.
+33. Show the top 2 memory-consuming pods in `default` now.
+34. Give me a CSV link for pod `prometheus-my-kube-prom-stack-kube-pr-prometheus-0` in `monitoring`.
+35. Generate a CSV download link for `my-kube-prom-stack-grafana-7cc9f485fc-zc2hx` in namespace `monitoring` with 1h range.
