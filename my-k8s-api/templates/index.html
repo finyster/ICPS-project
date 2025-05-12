@@ -19,7 +19,7 @@
     --bubble-user:#0d6efd;
   }
   /* ---------- Navbar ---------- */
-  .navbar-brand img{height:38px}
+  .navbar-brand .logo{height:34px; width:auto}
   /* ---------- Hero ---------- */
   .hero{padding:7rem 1rem;background:linear-gradient(135deg,#0d6efd33 0%,#0d6efd05 60%);}
   .hero h1{font-weight:700;font-size:clamp(2rem,5vw,3rem)}
@@ -37,6 +37,21 @@
   .faq-answer{display:none}
   /* ---------- Metrics ---------- */
   .table-container{max-height:60vh;overflow:auto}
+
+  /* ---------- 玻璃按鈕 ---------- */
+  .btn-glass {
+    position: relative;
+    color: #fff;
+    backdrop-filter: blur(8px) brightness(1.2);
+    background: rgba(13,110,253,.25);
+    border: 1px solid rgba(13,110,253,.6);
+    transition: all .25s;
+  }
+  .btn-glass:hover {
+    box-shadow: 0 0 8px 2px rgba(13,110,253,.5);
+    transform: translateY(-2px);
+    background: rgba(13,110,253,.4);
+  }
   </style>
 </head>
 
@@ -62,12 +77,18 @@
   </div>
 </nav>
 
-<!----------------  HERO  ---------------->
-<section class="hero text-center text-white">
-  <div class="container">
-    <h1>Kubernetes Intelligent Monitoring Analyzer</h1>
-    <p class="lead">Real‑time insights, AI‑powered chat, and effortless observability.</p>
-    <a href="#chat" class="btn btn-primary btn-lg mt-3">Try the Chat</a>
+<!-- ----------  HERO  ---------- -->
+<section class="hero text-white">
+  <div class="container d-flex flex-column flex-lg-row align-items-center gap-4">
+    <!-- Left ─ Logo -->
+    <img src="/static/img/logo.png" alt="Logo" class="hero-logo">
+    <!-- Right ─ Text -->
+    <div class="text-center text-lg-start">
+      <h1 class="hero-title mb-2">Kubernetes Intelligent Monitoring Analyzer</h1>
+      <p class="hero-sub mb-4">Real‑time insights, AI‑powered chat, and effortless observability.</p>
+      <!-- Glass button：桌機左靠齊、手機置中 -->
+      <a href="#chat" class="btn btn-glass btn-lg px-4">Try the Chat</a>
+    </div>
   </div>
 </section>
 
@@ -187,7 +208,10 @@
 <!----------------  FOOTER  ---------------->
 <footer class="bg-dark mt-auto py-4 border-top border-secondary">
   <div class="container text-center small">
-    <p class="mb-1 text-secondary">&copy; 2024 K8s Intelligent Monitoring Analyzer</p>
+    <p class="mb-1 text-secondary">
+      &copy; 2024 K8s Intelligent Monitoring Analyzer<br>
+      <span class="text-white-50">CGU Intelligent Cyber‑Physical Systems Research Group</span>
+    </p>
     <a href="https://github.com/yourrepo" class="text-primary me-3"><i class="fab fa-github"></i></a>
     <a href="mailto:dev@example.com" class="text-primary"><i class="fa-solid fa-envelope"></i></a>
   </div>
@@ -197,6 +221,14 @@
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<script>
+function renderMarkdown(md){
+  return marked.parse(md);  // 這裡使用 marked 函式把 markdown 文字轉成 HTML
+}
+</script>
+
 
 <script>
 /* ---------- Chat logic（簡化版，保留你原本功能） ---------- */
@@ -211,16 +243,19 @@ $('#chatForm').on('submit',async e=>{
   appendBubble('user',text); $msgInput.val('');
 
   isLoading=true; $sendBtn.prop('disabled',true);
-  appendBubble('assistant','',true); // loading
+  const $loading = appendBubble('assistant','',true);
 
   try{
     const {data}=await axios.post('/api/llm_chat',{user_message:text,history});
-    $('.loading-msg').remove();
-    appendBubble('assistant',data.assistant);
+    // 把 loading 泡泡改成正式回答
+    $loading
+      .removeClass('loading-msg')
+      .html(renderMarkdown(data.assistant));   // ← 待會 §2 會定義 renderMarkdown()
     history=data.history;
   }catch(err){
-    $('.loading-msg').remove();
-    appendBubble('assistant','❌ Server error, check console.');
+    $loading
+      .removeClass('loading-msg')
+      .text('❌ Server error, check console.');
   }finally{
     isLoading=false; $sendBtn.prop('disabled',false);
   }
@@ -233,70 +268,78 @@ function appendBubble(role,text,loading=false){
   }
   const bubble=$('<div class="bubble '+(role==='user'?'bubble-user':'bubble-ai')+'"></div>');
   if(loading){bubble.addClass('loading-msg').html('<span class="spinner-border spinner-border-sm"></span>');}
-  else      {bubble.text(text);}
-  row.append(bubble); $chatWin.append(row)[0].scrollTop=$chatWin[0].scrollHeight;
+  else {
+    if(role==='assistant'){
+      bubble.html(renderMarkdown(text));  // 支援 Markdown / 連結 / <code>
+    }else{
+      bubble.text(text);                 // 使用者仍保持純文字
+    }
+  }
+  row.append(bubble);
+  $chatWin.append(row)[0].scrollTop = $chatWin[0].scrollHeight;
+  return bubble;    
 }
 </script>
 
 <script>
-    /* ---------- Pod Metrics ---------- */
-    const $nsSelect   = $('#nsSelect');
-    const $refreshBtn = $('#refreshBtn');
-    const $metricsBody= $('#metricsBody');
-    
-    /* ① 載入 namespaces */
-    async function loadNamespaces(){
-      try{
-        const {data} = await axios.get('/api/namespaces');
-        $nsSelect.empty();
-        data.namespaces.forEach(ns =>
-          $nsSelect.append(`<option value="${ns}">${ns}</option>`));
-      }catch(e){
-        $nsSelect.html('<option>(error)</option>');
-      }
-    }
-    
-    /* ② 載入 Pod metrics */
-    async function loadMetrics(){
-      const ns=$nsSelect.val();
-      if(!ns) return;
-      $metricsBody.html('<tr><td colspan="8" class="text-center text-secondary">Loading…</td></tr>');
-      try{
-        const {data:rows}=await axios.get('/api/pod_metrics',{params:{namespace:ns}});
-        if(!rows.length){
-          $metricsBody.html('<tr><td colspan="8" class="text-center text-secondary">No data</td></tr>');
-          return;
-        }
-        $metricsBody.empty();
-        rows.forEach((r,i)=>{
-          $metricsBody.append(`
-            <tr>
-              <td>${i+1}</td>
-              <td class="text-break">${r.pod}</td>
-              <td>${r.cpu.toFixed(4)}</td>
-              <td>${r.mem.toFixed(1)}</td>
-              <td>${r.disk.toFixed(1)}</td>
-              <td>${r.net_rx.toFixed(1)}</td>
-              <td>${r.net_tx.toFixed(1)}</td>
-              <td>${r.ready ? '<span class="text-success">✔</span>' :
-                              '<span class="text-danger">✘</span>'}</td>
-            </tr>`);
-        });
-      }catch(err){
-        console.error(err);
-        $metricsBody.html('<tr><td colspan="8" class="text-center text-danger">Load error</td></tr>');
-      }
-    }
-    
-    /* ③ 綁定事件 */
-    $refreshBtn.on('click', loadMetrics);
-    $nsSelect.on('change',  loadMetrics);
-    
-    /* ④ 首次載入 */
-    (async ()=>{
-      await loadNamespaces();
-      await loadMetrics();
-    })();
+/* ---------- Pod Metrics ---------- */
+const $nsSelect   = $('#nsSelect');
+const $refreshBtn = $('#refreshBtn');
+const $metricsBody= $('#metricsBody');
+
+/* ① 載入 namespaces */
+async function loadNamespaces(){
+try{
+  const {data} = await axios.get('/api/namespaces');
+  $nsSelect.empty();
+  data.namespaces.forEach(ns =>
+    $nsSelect.append(`<option value="${ns}">${ns}</option>`));
+}catch(e){
+  $nsSelect.html('<option>(error)</option>');
+}
+}
+
+/* ② 載入 Pod metrics */
+async function loadMetrics(){
+const ns=$nsSelect.val();
+if(!ns) return;
+$metricsBody.html('<tr><td colspan="8" class="text-center text-secondary">Loading…</td></tr>');
+try{
+  const {data:rows}=await axios.get('/api/pod_metrics',{params:{namespace:ns}});
+  if(!rows.length){
+    $metricsBody.html('<tr><td colspan="8" class="text-center text-secondary">No data</td></tr>');
+    return;
+  }
+  $metricsBody.empty();
+  rows.forEach((r,i)=>{
+    $metricsBody.append(`
+      <tr>
+        <td>${i+1}</td>
+        <td class="text-break">${r.pod}</td>
+        <td>${r.cpu.toFixed(4)}</td>
+        <td>${r.mem.toFixed(1)}</td>
+        <td>${r.disk.toFixed(1)}</td>
+        <td>${r.net_rx.toFixed(1)}</td>
+        <td>${r.net_tx.toFixed(1)}</td>
+        <td>${r.ready ? '<span class="text-success">✔</span>' :
+                        '<span class="text-danger">✘</span>'}</td>
+      </tr>`);
+  });
+}catch(err){
+  console.error(err);
+  $metricsBody.html('<tr><td colspan="8" class="text-center text-danger">Load error</td></tr>');
+}
+}
+
+/* ③ 綁定事件 */
+$refreshBtn.on('click', loadMetrics);
+$nsSelect.on('change',  loadMetrics);
+
+/* ④ 首次載入 */
+(async ()=>{
+await loadNamespaces();
+await loadMetrics();
+})();
 </script>
     
 </body>
