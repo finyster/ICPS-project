@@ -81,3 +81,5 @@ def export_csv(namespace: str, pod: str, range: str = "[1h]"):
     filename = f"{namespace}-{pod}-metrics-{range.strip('[]')}.csv"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(output, media_type="text/csv", headers=headers)
+
+
