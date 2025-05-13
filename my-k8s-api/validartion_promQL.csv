@@ -1,0 +1,14 @@
+
+| Test Prompt                                                              | Expected PromQL                                                                 |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| What is the CPU usage of pod `busybox-test` in the `default` namespace?  | `container_cpu_usage_seconds_total{namespace="default",pod="busybox-test"}[1h]` |
+| Show memory usage of pod `nginx` in namespace `monitoring`.              | `container_memory_usage_bytes{namespace="monitoring",pod="nginx"}[1h]`          |
+| How much CPU has node `node-1` used in the past 2 hours?                 | `node_cpu_usage_seconds_total{node="node-1"}[2h]`                               |
+| What’s the memory usage of namespace `production` over the last 1 day?   | `container_memory_usage_seconds_total{namespace="production"}[1d]`              |
+| Show CPU usage of namespace `kube-system` in the last 30 minutes.        | `container_cpu_usage_seconds_total{namespace="kube-system"}[30m]`               |
+| Show CPU usage for node `node-a` over 1 week.                            | `node_cpu_usage_seconds_total{node="node-a"}[7d]`                               |
+| How much memory was used by pod `web-1` in namespace `frontend` last 4h? | `container_memory_usage_bytes{namespace="frontend",pod="web-1"}[4h]`            |
+| Get the memory usage of all pods in `default` namespace in the last 12h. | `container_memory_usage_seconds_total{namespace="default"}[12h]`                |
+| What’s the CPU usage of pod `worker` in `test` namespace over 1 month?   | `container_cpu_usage_seconds_total{namespace="test",pod="worker"}[1mo]`         |
+
+

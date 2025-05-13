@@ -1,0 +1,10 @@
+| Test Prompt                                                                | Expected Textual Behavior                                                                                    | 判斷標準          |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------| ---------------- |
+| What is the CPU usage of pod `nginx` in namespace `default`?               | 回應中應明確說明 pod 名、namespace、CPU 數值（如 "The CPU usage of pod `nginx` in namespace `default` is...%"） | ✅ 說明完整      | 
+| Please show memory usage of the top 3 pods in namespace `monitoring`.      | 回應應包含前 3 個 pod 名稱，並清楚列出每個 pod 的 memory 使用量（格式可為列表或條列）                              | ✅ 條列清楚      |
+| Export the CPU data for `pod-1` as CSV.                                    | 若成功，應包含一段帶有下載連結的文字描述（例如 "Download CSV here: \[link]"）                                     | ✅ 語意對應      | 
+| Can you tell me which pod is consuming the most memory?                    | 應以文字說明「哪個 pod」最高，例如 "Pod `xyz` is using the most memory at 123MiB"                               | ✅ 有指名與數值   |
+| What is the current resource status of namespace `staging`?                | 回應應提到 CPU、memory 兩者，語意要完整（不要只寫 "OK" 或 "see above"）                                          | ✅ 詳細敘述       |
+| Tell me the pod CPU usage trend over the last week in `default` namespace. | 應描述趨勢語意（如 "CPU usage increased gradually"、"peaked at X%"），不能只列原始數據                            | ✅ 有趨勢語句    |
+| How's the system doing?                                                    | 應避免答非所問，需提示 user 提供 namespace/pod 才能繼續（如 "Please specify a namespace or pod."）               | ✅ 有引導性回答   |
+

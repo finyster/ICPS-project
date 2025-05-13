@@ -1,0 +1,13 @@
+| Test Prompt                                                            | Expected Function                        |
+| ---------------------------------------------------------------------- | ---------------------------------------- |
+| What is the CPU usage of pod `nginx-123` in the `default` namespace?   | `get_pod_cpu_usage`                      |
+| How much memory is pod `myapp-456` using in `dev` namespace?           | `get_pod_memory_usage`                   |
+| Show me the top 3 CPU-consuming pods in the `monitoring` namespace.    | `get_top_cpu_pods`                       |
+| Which pods in `default` use the most memory?                           | `get_top_memory_pods`                    |
+| Show CPU and memory trends of pod `api-server` in `backend` namespace. | `get_pod_resource_usage_over_time`       |
+| Give me the past 7 days resource usage in the `production` namespace.  | `get_namespace_resource_usage_over_time` |
+| What is the memory usage of node `worker-1` over the last 2 hours?     | `query_resource`                         |
+| List top 5 memory-using pods in `default` for the last 1 day.          | `top_k_pods`                             |
+| I want to export CSV for pod `fluentd` in `logging` namespace.         | `generate_csv_link`                      |
+| Predict CPU usage of pod `ml-model` in `ai-lab` namespace next hour.   | `predict_pod_cpu_next_hour`              |
+
