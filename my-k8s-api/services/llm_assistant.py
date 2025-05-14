@@ -1,12 +1,10 @@
 from __future__ import annotations
-import os, json, requests
+import os, json, requests, re, time
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 from groq import Groq
 from typing import Optional
 from pydantic import BaseModel
-import re
-import time
 from datetime import datetime, timedelta
 from services.rag_utils_en import rag_retrieve, is_supported
 import pandas as pd
