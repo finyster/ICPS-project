@@ -1,16 +1,17 @@
 from __future__ import annotations
-import os, json, requests, re, time
+import os, json, requests
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 from groq import Groq
 from typing import Optional
 from pydantic import BaseModel
+import re
+import time
 from datetime import datetime, timedelta
 from services.rag_utils_en import rag_retrieve, is_supported
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
-import logging
 
 class ChatResponse(BaseModel):
     assistant: Optional[str]
@@ -122,24 +123,19 @@ def get_namespace_resource_usage_over_time(namespace: str, days: int = 7, **kwar
     })
 
 def query_resource(level: str, target: str, metric: str, duration: str, namespace: str | None = None) -> str:
-    # Validate duration format
+    """
+    查詢 pod / node / namespace 的 CPU 或記憶體使用量，支援範圍時間驗證。
+    支援格式：30m, 1h, 2d, 1mo（最多 10mo）
+    """
     match = re.match(r"^(\d+)(m|h|d|mo)$", duration)
     if not match:
         return json.dumps({"error": "Invalid duration format. Use 30m, 1h, 2d, 1mo"})
-    
+
     value, unit = match.groups()
     value = int(value)
     if unit == "mo" and value > 10:
         return json.dumps({"error": "Max supported duration is 10mo"})
 
-    # Check for missing namespace in pod-level queries
-    if level == "pod":
-        if not namespace and "/" not in target:
-            return json.dumps({"error": "Namespace is required for pod-level queries. Please specify namespace or use 'namespace/pod' format for target."})
-        elif namespace is None and "/" in target:
-            namespace, target = target.split("/", 1)
-
-    # Rest of the time calculation and query logic remains unchanged
     now = datetime.utcnow()
     delta = {
         "mo": timedelta(days=30 * value),
@@ -160,6 +156,8 @@ def query_resource(level: str, target: str, metric: str, duration: str, namespac
         return json.dumps({"error": "Metric must be 'cpu' or 'memory'"})
 
     if level == "pod":
+        if not namespace:
+            return json.dumps({"error": "Namespace is required for pod-level query"})
         query = f'container_{metric}_usage_seconds_total{{namespace="{namespace}",pod="{target}"}}'
     elif level == "node":
         query = f'node_{metric}_usage_seconds_total{{node="{target}"}}'
@@ -184,7 +182,7 @@ def top_k_pods(namespace: str, metric: str, k: int = 3, duration: str = "5m") ->
         query = f'topk({k}, sum by(pod)(container_memory_usage_bytes{{namespace="{namespace}"}}))'
 
     return json.dumps(_prom_query(query))
-    
+
 def generate_csv_link(namespace: str, pod: str, range: str = "[1h]") -> str:
     if not range.startswith("["):
         bracketed = f"[{range}]"
@@ -195,7 +193,9 @@ def generate_csv_link(namespace: str, pod: str, range: str = "[1h]") -> str:
         "message": f"You can download the CSV from: [Download CSV]({url})"
     })
 # ------------------------ 預測 CPU 使用率 ------------------------ #
-
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
 def fetch_pod_cpu_metrics(namespace: str, pod: str, duration: str = "1h", step: str = "5m") -> pd.DataFrame:
     """
@@ -235,11 +235,9 @@ def fetch_pod_cpu_metrics(namespace: str, pod: str, duration: str = "1h", step: 
     return df
 
 
-def predict_pod_cpu_usage(namespace: str, pod: str, duration: str = "1h", step: str = "5m", future_duration: str = "1h") -> str:
+def predict_pod_cpu_next_hour(namespace: str, pod: str, duration: str = "1h", step: str = "5m") -> str:
     """
-    預測未來 Pod 的 CPU 使用率，基於歷史數據。
-    - `future_duration`: 預測的時間範圍（例如 "1h", "2h", "1d"）。
-    Alan52254改的
+    預測下一小時 Pod 的 CPU 使用率，基於過去 1 小時的資料
     """
     try:
         df = fetch_pod_cpu_metrics(namespace, pod, duration, step)
@@ -257,13 +255,12 @@ def predict_pod_cpu_usage(namespace: str, pod: str, duration: str = "1h", step: 
         model = LinearRegression()
         model.fit(X, y)
 
-        # 計算未來的時間點數量
-        future_steps = _duration_to_seconds(future_duration) // _duration_to_seconds(step)
-        future_X = np.array(range(len(df), len(df) + future_steps)).reshape(-1, 1)
+        # 預測未來 12 個 5 分鐘
+        future_X = np.array(range(len(df), len(df) + 12)).reshape(-1, 1)
         predictions = model.predict(future_X)
 
         future_df = pd.DataFrame({
-            "timestamp": pd.date_range(start=df["ds"].iloc[-1], periods=future_steps, freq=step),
+            "timestamp": pd.date_range(start=df["ds"].iloc[-1], periods=12, freq=step),
             "predicted_cpu_usage": predictions
         })
 
@@ -272,37 +269,10 @@ def predict_pod_cpu_usage(namespace: str, pod: str, duration: str = "1h", step: 
     except Exception as e:
         print(f"[ERROR] 預測失敗：{str(e)}")
         return json.dumps({"error": str(e)})
-#alan52254改的動態調整
-def create_hpa_for_deployment(namespace: str, deployment: str, metric: str = "cpu",
-                               min_replicas: int = 1, max_replicas: int = 5,
-                               target_utilization: int = 60) -> str:
-    from kubernetes import client, config
-    config.load_kube_config()
-
-    autoscaling_v1 = client.AutoscalingV1Api()
-
-    hpa = client.V1HorizontalPodAutoscaler(
-        metadata=client.V1ObjectMeta(name=f"{deployment}-hpa"),
-        spec=client.V1HorizontalPodAutoscalerSpec(
-            scale_target_ref=client.V1CrossVersionObjectReference(
-                api_version="apps/v1",
-                kind="Deployment",
-                name=deployment,
-            ),
-            min_replicas=min_replicas,
-            max_replicas=max_replicas,
-            target_cpu_utilization_percentage=target_utilization if metric == "cpu" else None
-        )
-    )
-
-    try:
-        autoscaling_v1.create_namespaced_horizontal_pod_autoscaler(namespace=namespace, body=hpa)
-        return json.dumps({"status": "success", "message": f"HPA created for {deployment}"})
-    except Exception as e:
-        return json.dumps({"status": "error", "message": str(e)})
 
 
-TOOLS_DEF: List[dict] = [   
+
+TOOLS_DEF: List[dict] = [
     {
         "type": "function",
         "function": {
@@ -400,34 +370,17 @@ TOOLS_DEF: List[dict] = [
         "type": "function",
         "function": {
             "name": "query_resource",
-            "description": "Query CPU or memory usage of a pod, node, or namespace. Most fields are optional.",
+            "description": "Query CPU or Memory usage for pod / node / namespace.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "level": {
-                        "type": "string",
-                        "enum": ["pod", "node", "namespace"],
-                        "description": "Query level. Defaults to 'pod'."
-                    },
-                    "target": {
-                        "type": "string",
-                        "description": "The resource name (e.g., pod name, node name)."
-                    },
-                    "metric": {
-                        "type": "string",
-                        "enum": ["cpu", "memory"],
-                        "description": "Metric to query. Defaults to 'cpu'."
-                    },
-                    "duration": {
-                        "type": "string",
-                        "description": "Time range like 1h, 2d, or natural language like 'past 2 hours'."
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Only required for pod-level queries. Can also be inferred from target='namespace/pod'."
-                    }
+                    "level": {"type": "string", "enum": ["pod", "node", "namespace"]},
+                    "target": {"type": "string", "description": "pod name, node name, or namespace name"},
+                    "metric": {"type": "string", "enum": ["cpu", "memory"]},
+                    "duration": {"type": "string", "description": "look‑back window like 30m, 4h, 2d, 1mo (max 10mo)"},
+                    "namespace": {"type": "string"}
                 },
-                "required": ["target"]
+                "required": ["level", "target", "metric", "duration"]
             }
         }
     },
@@ -467,53 +420,17 @@ TOOLS_DEF: List[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "predict_pod_cpu_usage",
-            "description": "Predict future CPU usage for a specific pod in a given namespace based on historical data.",
+            "name": "predict_pod_cpu_next_hour",
+            "description": "Predict the CPU usage for the next hour for a specific pod using historical data.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace of the target pod (e.g., 'default')"
-                    },
-                    "pod": {
-                        "type": "string",
-                        "description": "Name of the pod to predict CPU usage for"
-                    },
-                    "duration": {
-                        "type": "string",
-                        "default": "1h",
-                        "description": "Historical data range to train the model, e.g., '1h', '2h', '1d'"
-                    },
-                    "step": {
-                        "type": "string",
-                        "default": "5m",
-                        "description": "Sampling interval (data granularity), e.g., '5m', '1m'"
-                    },
-                    "future_duration": {
-                        "type": "string",
-                        "default": "1h",
-                        "description": "Duration of future CPU usage prediction, e.g., '1h', '2h'"
-                    }
+                    "namespace": {"type": "string", "description": "Namespace of the pod"},
+                    "pod": {"type": "string", "description": "Pod name"},
+                    "duration": {"type": "string", "default": "1h"},
+                    "step": {"type": "string", "default": "5m"}
                 },
                 "required": ["namespace", "pod"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_hpa_for_deployment",
-            "parameters": {
-                "properties": {
-                    "namespace": {"type": "string"},
-                    "deployment": {"type": "string"},
-                    "metric": {"type": "string", "enum": ["cpu", "memory"], "default": "cpu"},
-                    "min_replicas": {"type": "integer", "default": 1},
-                    "max_replicas": {"type": "integer", "default": 5},
-                    "target_utilization": {"type": "integer", "default": 60}
-                },
-                "required": ["namespace", "deployment"]
             }
         }
     }
@@ -529,8 +446,7 @@ FUNC_MAP = {
     "query_resource": query_resource,
     "top_k_pods": top_k_pods,
     "generate_csv_link": generate_csv_link,
-    "predict_pod_cpu_usage": predict_pod_cpu_usage,
-    "create_hpa_for_deployment": create_hpa_for_deployment
+    "predict_pod_cpu_next_hour": predict_pod_cpu_next_hour,
 }
 
 SYSTEM_PROMPT = """
@@ -546,18 +462,13 @@ Your capabilities include:
 7. Responding in natural language while calling relevant functions to fetch live data.
 8. Format multi-item results using bullet points or line breaks for readability.
 
-**Tool Mapping Guidance:**
-- For "show" or "get" CPU/memory usage of a pod, use `get_pod_cpu_usage` or `get_pod_memory_usage`.
-- For "query" resource usage (pod, node, namespace), use `query_resource`.
-- For "predict" or "forecast" CPU usage, use `predict_pod_cpu_usage`. Example: "Predict CPU usage for pod X in namespace Y for next 1h" → `predict_pod_cpu_usage(namespace="Y", pod="X", future_duration="1h")`.
-- For "create HPA" or "set up autoscaling", use `create_hpa_for_deployment`. Example: "Create HPA for deployment my-app with CPU 60%" → `create_hpa_for_deployment(namespace="default", deployment="my-app", metric="cpu", min_replicas=1, max_replicas=5, target_utilization=60)`.
+When a user asks a question, determine if it requires a tool call (e.g., to Prometheus). If so, call the appropriate tool and use the results to provide a concise, helpful, and actionable summary. Avoid guessing if data is unavailable—inform the user clearly and suggest alternatives.
 
-**Parameter Type Rules:**
-- Ensure `min_replicas`, `max_replicas`, and `target_utilization` are integers (e.g., 1, 5, 60), not strings.
-- `duration` and `future_duration` must follow formats like "30m", "1h", "2d".
-
-**Error Handling:**
-- If a tool call fails due to missing or invalid parameters, respond with a helpful message like: "I need the namespace and pod name to proceed. Please specify them, e.g., 'default/my-pod'."
+**Special Instructions for CSV Download:**
+- If the user mentions "download CSV", "export CSV", or similar phrases, call the generate_csv_link function.
+- If namespace, pod, or range are not provided in the prompt, infer them from the conversation history (e.g., if a previous message mentioned a namespace or pod).
+- If you cannot infer the required parameters, respond with a message asking the user to specify the missing information (e.g., "Please specify the namespace and pod for the CSV download.").
+- Default range to "[1h]" if not specified.
 """
 
 MAX_TOOL_SUMMARY = 400        # 單條訊息上限
@@ -591,19 +502,28 @@ def prune_history(hist: list[dict]) -> list[dict]:
     return hist
 
 def infer_parameters_from_history(history: list[dict], user_message: str) -> dict:
-    inferred_params = {"namespace": None, "pod": None, "range": "[1h]"}  # Default range
+    """
+    從對話歷史中推斷 namespace、pod 和 range。
+    如果無法推斷，返回 None。
+    """
+    inferred_params = {"namespace": None, "pod": None, "range": "[1h]"}  # 預設 range 為 [1h]
 
+    # 檢查 user_message 是否有關鍵詞
     if "download csv" in user_message.lower() or "export csv" in user_message.lower():
+        # 從歷史訊息中提取 namespace 和 pod
         for msg in reversed(history):
             content = msg.get("content", "").lower()
+            # 尋找 namespace
             if not inferred_params["namespace"] and "namespace" in content:
                 match = re.search(r'namespace\s*[:=]\s*([a-zA-Z0-9_-]+)', content)
                 if match:
                     inferred_params["namespace"] = match.group(1)
+            # 尋找 pod
             if not inferred_params["pod"] and "pod" in content:
                 match = re.search(r'pod\s*[:=]\s*([a-zA-Z0-9_-]+)', content)
                 if match:
                     inferred_params["pod"] = match.group(1)
+            # 尋找 range
             if "range" in content:
                 match = re.search(r'range\s*[:=]\s*\[?(\d+[mhd]|1mo)\]?', content)
                 if match:
@@ -612,6 +532,7 @@ def infer_parameters_from_history(history: list[dict], user_message: str) -> dic
     return inferred_params
 
 def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, Any]:
+    """同步函式，不要用 await 呼叫"""
     history = prune_history(history or [])
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -619,7 +540,7 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
         {"role": "user", "content": user_message},
     ]
 
-    # Handle CSV requests (unchanged logic)
+    # 檢查是否需要生成 CSV 並推斷參數
     csv_keywords = ["download csv", "export csv"]
     if any(keyword in user_message.lower() for keyword in csv_keywords):
         inferred_params = infer_parameters_from_history(history, user_message)
@@ -633,6 +554,7 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
                 "assistant": f"Please specify the {', '.join(missing)} for the CSV download.",
                 "history": history
             }
+        # 直接模擬 tool call
         result = generate_csv_link(
             namespace=inferred_params["namespace"],
             pod=inferred_params["pod"],
@@ -643,6 +565,7 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
             "content": result,
             "tool_call_id": "inferred_csv_call"
         })
+        # 第二次呼叫 LLM，讓它根據結果生成自然語言回應
         resp = client.chat.completions.create(
             model=MODEL,
             messages=messages,
@@ -655,7 +578,7 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
         front_history = [m for m in messages if m["role"] != "system"]
         return {"assistant": final_msg.content, "history": front_history}
 
-    # First LLM call to decide tool usage
+    # 第一次呼叫：LLM 決定是否呼叫工具
     from groq import BadRequestError
     try:
         resp = client.chat.completions.create(
@@ -671,8 +594,9 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
             "Try specifying: namespace, metric (cpu/memory), duration like 30m/2h/1d."
         )
         return {"assistant": human, "history": history or []}
-    
     assistant_msg = resp.choices[0].message
+
+    # 先取出 tool_calls
     tool_calls = getattr(assistant_msg, "tool_calls", None) or []
     messages.append({
         "role": "assistant",
@@ -680,33 +604,27 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
         "tool_calls": tool_calls
     })
 
-    # Execute tool calls with enhanced error handling
+    # 如果有 tool_calls，就執行並 append 結果
     for tool_call in tool_calls:
         fn = FUNC_MAP.get(tool_call.function.name)
         if not fn:
             continue
         try:
             args = json.loads(tool_call.function.arguments)
-            result = fn(**args)
-        except TypeError as e:
-            error_msg = str(e)
-            match = re.search(r"missing (\d) required positional argument: '(\w+)'", error_msg)
-            if match:
-                arg_name = match.group(2)
-                assistant_response = f"Error: Missing required argument '{arg_name}' for {tool_call.function.name}. Please provide it."
-            else:
-                assistant_response = f"Error executing {tool_call.function.name}: {error_msg}"
-            return {"assistant": assistant_response, "history": history}
-        except Exception as e:
-            assistant_response = f"Error executing {tool_call.function.name}: {str(e)}"
-            return {"assistant": assistant_response, "history": history}
+        except json.JSONDecodeError as e:
+            err_msg = (
+                "⚠️ I generated malformed tool arguments, "
+                "please rephrase your question (e.g. fix the time window)."
+            )
+            return {"assistant": err_msg, "history": history or []}
+        result = fn(**args)
         messages.append({
             "role": "tool",
             "content": result,
             "tool_call_id": tool_call.id
         })
 
-    # Second LLM call for final response
+    # 第二次呼叫：根據工具結果輸出最終回答
     if tool_calls:
         resp2 = client.chat.completions.create(
             model=MODEL,
@@ -718,6 +636,7 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
         final_msg = resp2.choices[0].message
         messages.append({"role": "assistant", "content": final_msg.content})
 
+    # 返回給前端：去除 system，並確保 assistant 回應不為 None
     front_history = [m for m in messages if m["role"] != "system"]
     last_msg = messages[-1]
     assistant_content = last_msg.get("content") or "[Error: No response generated from the assistant.]"
