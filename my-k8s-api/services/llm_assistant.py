@@ -17,15 +17,21 @@ class ChatResponse(BaseModel):
     history: List[dict]
 
 load_dotenv()
+'''
+alan52254改的可以選擇groq或者local模式
+'''
+LLM_MODE = os.getenv("LLM_MODE", "local")   # "local" 或 "groq"
+#GROQ_API_KEY = os.getenv("GROQ_API_KEY")    # 只有 groq 模式才需要
 
-PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
-GROQ_API_KEY   = os.getenv("GROQ_API_KEY")
-MODEL          = "llama3-8b-8192"   # 請改成你帳號可用的 Groq 模型名稱
+#client: Groq | None = None
 
-if not GROQ_API_KEY:
-    raise RuntimeError("❌ GROQ_API_KEY 未設定！")
-
-client = Groq(api_key=GROQ_API_KEY)
+if LLM_MODE == "groq":
+    if not GROQ_API_KEY:
+        raise RuntimeError("❌ GROQ_API_KEY 未設定，無法使用 Groq 模式！")
+    client = Groq(api_key=GROQ_API_KEY)
+else:
+    # local 模式不需要 Groq client
+    logging.info("LLM in local (Hermes) mode ― no external key needed.")
 
 # ------------------------ Prometheus 小工具 ------------------------ #
 def _prom_query(q: str) -> dict:
@@ -611,49 +617,32 @@ def infer_parameters_from_history(history: list[dict], user_message: str) -> dic
 
     return inferred_params
 
-def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, Any]:
+def chat_with_llm(user_message: str, history: list | None = None) -> dict:
     history = prune_history(history or [])
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        *history,
-        {"role": "user", "content": user_message},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                *history,
+                {"role": "user", "content": user_message}]
 
-    # Handle CSV requests (unchanged logic)
-    csv_keywords = ["download csv", "export csv"]
-    if any(keyword in user_message.lower() for keyword in csv_keywords):
-        inferred_params = infer_parameters_from_history(history, user_message)
-        if not inferred_params["namespace"] or not inferred_params["pod"]:
-            missing = []
-            if not inferred_params["namespace"]:
-                missing.append("namespace")
-            if not inferred_params["pod"]:
-                missing.append("pod")
-            return {
-                "assistant": f"Please specify the {', '.join(missing)} for the CSV download.",
-                "history": history
-            }
-        result = generate_csv_link(
-            namespace=inferred_params["namespace"],
-            pod=inferred_params["pod"],
-            range=inferred_params["range"]
-        )
-        messages.append({
-            "role": "tool",
-            "content": result,
-            "tool_call_id": "inferred_csv_call"
-        })
-        resp = client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=TOOLS_DEF,
-            tool_choice="none",
-            max_tokens=800,
-        )
-        final_msg = resp.choices[0].message
-        messages.append({"role": "assistant", "content": final_msg.content})
-        front_history = [m for m in messages if m["role"] != "system"]
-        return {"assistant": final_msg.content, "history": front_history}
+    # === 1. Local Hermes ===
+    if LLM_MODE == "local":
+        raw_reply = local_generate(messages)
+        parsed = parse_function_call(raw_reply)
+        if parsed:
+            fn_name, fn_args = parsed
+            if fn_name in FUNC_MAP:
+                try:
+                    tool_result = FUNC_MAP[fn_name](**fn_args)
+                    messages += [
+                        {"role": "assistant", "content": raw_reply},
+                        {"role": "tool", "content": tool_result,
+                         "tool_call_id": "local"}
+                    ]
+                    raw_reply = local_generate(messages, max_new_tokens=400)
+                except Exception as e:
+                    raw_reply = f"⚠️ Tool execution failed: {e}"
+        return {"assistant": raw_reply,
+                "history": history + [{"role": "user", "content": user_message},
+                                      {"role": "assistant", "content": raw_reply}]}
 
     # First LLM call to decide tool usage
     from groq import BadRequestError
