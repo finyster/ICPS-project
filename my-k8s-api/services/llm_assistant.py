@@ -2,7 +2,7 @@ from __future__ import annotations
 import os, json, requests
 from typing import List, Dict, Any
 from dotenv import load_dotenv
-from groq import Groq
+#from groq import Groq
 from typing import Optional
 from pydantic import BaseModel
 import re
@@ -13,12 +13,18 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 import logging
+<<<<<<< HEAD
  
+=======
+from openai import OpenAI
+
+>>>>>>> my-feature
 class ChatResponse(BaseModel):
     assistant: Optional[str]
     history: List[dict]
  
 load_dotenv()
+<<<<<<< HEAD
  
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY")
@@ -29,6 +35,19 @@ if not GROQ_API_KEY:
  
 client = Groq(api_key=GROQ_API_KEY)
  
+=======
+
+# function-calling 模型
+FUNC_MODEL = "nous-hermes"
+client_fc  = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+
+# 最終自然語言回覆模型
+CHAT_MODEL = "llama3.1"          # 或 "gpt-4o"…
+client_chat = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
+
+>>>>>>> my-feature
 # ------------------------ Prometheus 小工具 ------------------------ #
 def _prom_query(q: str) -> dict:
     try:
@@ -72,7 +91,17 @@ def _duration_to_seconds(duration: str) -> int:
     value, unit = int(m.group(1)), m.group(2)
     factor = {"m": 60, "h": 3600, "d": 86400, "w": 604800, "y": 31536000}[unit]
     return value * factor
+<<<<<<< HEAD
  
+=======
+
+###########################test
+def is_smalltalk(msg: str) -> bool:
+    # 可以自己加強這個判斷
+    return msg.lower().strip() in ["hello", "hi", "who are you", "早安", "你好"]
+##############################
+
+>>>>>>> my-feature
 def get_pod_cpu_usage(namespace: str, pod: str, range_str: str = "[1h]", **kwargs) -> str:
     q = f'container_cpu_usage_seconds_total{{namespace="{namespace}",pod="{pod}"}}{range_str}'
     return json.dumps(_prom_query(q))
@@ -612,16 +641,25 @@ def infer_parameters_from_history(history: list[dict], user_message: str) -> dic
                     inferred_params["range"] = f"[{match.group(1)}]"
  
     return inferred_params
+<<<<<<< HEAD
  
 def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, Any]:
+=======
+
+def chat_with_llm(user_message: str, history: list | None = None) -> dict:
+>>>>>>> my-feature
     history = prune_history(history or [])
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         *history,
         {"role": "user", "content": user_message},
     ]
+<<<<<<< HEAD
  
     # Handle CSV requests (unchanged logic)
+=======
+    # --- Step 1. CSV download shortcut (原本邏輯保留) ---
+>>>>>>> my-feature
     csv_keywords = ["download csv", "export csv"]
     if any(keyword in user_message.lower() for keyword in csv_keywords):
         inferred_params = infer_parameters_from_history(history, user_message)
@@ -645,23 +683,36 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
             "content": result,
             "tool_call_id": "inferred_csv_call"
         })
-        resp = client.chat.completions.create(
-            model=MODEL,
+        resp = client_chat.chat.completions.create(
+            model=CHAT_MODEL,
             messages=messages,
-            tools=TOOLS_DEF,
-            tool_choice="none",
             max_tokens=800,
         )
         final_msg = resp.choices[0].message
         messages.append({"role": "assistant", "content": final_msg.content})
         front_history = [m for m in messages if m["role"] != "system"]
         return {"assistant": final_msg.content, "history": front_history}
+<<<<<<< HEAD
  
     # First LLM call to decide tool usage
     from groq import BadRequestError
+=======
+
+    # --- Step 2. 判斷是否純聊天 (可選) ---
+    if is_smalltalk(user_message):
+        resp = client_chat.chat.completions.create(
+            model=CHAT_MODEL,
+            messages=messages,
+            max_tokens=400,
+        )
+        return {"assistant": resp.choices[0].message.content, "history": history}
+
+    # --- Step 3. function calling：Hermes 判斷是否需要 tool-call ---
+    from openai import BadRequestError
+>>>>>>> my-feature
     try:
-        resp = client.chat.completions.create(
-            model=MODEL,
+        resp_fc = client_fc.chat.completions.create(
+            model=FUNC_MODEL,
             messages=messages,
             tools=TOOLS_DEF,
             tool_choice="auto",
@@ -673,16 +724,26 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
             "Try specifying: namespace, metric (cpu/memory), duration like 30m/2h/1d."
         )
         return {"assistant": human, "history": history or []}
+<<<<<<< HEAD
    
     assistant_msg = resp.choices[0].message
+=======
+
+    assistant_msg = resp_fc.choices[0].message
+>>>>>>> my-feature
     tool_calls = getattr(assistant_msg, "tool_calls", None) or []
     messages.append({
         "role": "assistant",
         "content": assistant_msg.content,
         "tool_calls": tool_calls
     })
+<<<<<<< HEAD
  
     # Execute tool calls with enhanced error handling
+=======
+
+    # --- Step 4. 執行 tool-calls 並 append 回 messages ---
+>>>>>>> my-feature
     for tool_call in tool_calls:
         fn = FUNC_MAP.get(tool_call.function.name)
         if not fn:
@@ -690,15 +751,6 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
         try:
             args = json.loads(tool_call.function.arguments)
             result = fn(**args)
-        except TypeError as e:
-            error_msg = str(e)
-            match = re.search(r"missing (\d) required positional argument: '(\w+)'", error_msg)
-            if match:
-                arg_name = match.group(2)
-                assistant_response = f"Error: Missing required argument '{arg_name}' for {tool_call.function.name}. Please provide it."
-            else:
-                assistant_response = f"Error executing {tool_call.function.name}: {error_msg}"
-            return {"assistant": assistant_response, "history": history}
         except Exception as e:
             assistant_response = f"Error executing {tool_call.function.name}: {str(e)}"
             return {"assistant": assistant_response, "history": history}
@@ -707,6 +759,7 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
             "content": result,
             "tool_call_id": tool_call.id
         })
+<<<<<<< HEAD
  
     # Second LLM call for final response
     if tool_calls:
@@ -725,3 +778,19 @@ def chat_with_llm(user_message: str, history: list | None = None) -> Dict[str, A
     assistant_content = last_msg.get("content") or "[Error: No response generated from the assistant.]"
    
     return {"assistant": assistant_content, "history": front_history}
+=======
+
+    # --- Step 5. 用更會聊天的模型 (如 llama3.1/gpt-4o) 輸出最終回答 ---
+    resp2 = client_chat.chat.completions.create(
+        model=CHAT_MODEL,
+        messages=messages,
+        max_tokens=800,
+        tool_choice="none",      # 不再呼叫工具
+    )
+    final_msg = resp2.choices[0].message
+    messages.append({"role": "assistant", "content": final_msg.content})
+
+    front_history = [m for m in messages if m["role"] != "system"]
+    assistant_content = final_msg.content or "[Error: No response generated from the assistant.]"
+    return {"assistant": assistant_content, "history": front_history}
+>>>>>>> my-feature
