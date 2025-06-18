@@ -12,6 +12,12 @@ import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, Field
+from sklearn.linear_model import LinearRegression # 確保匯入 LinearRegression
+
+# --- 關鍵修改：匯入 RAG 系統與日誌處理器 ---
+from .rag_utils_dynamic import rag_system
+from .log_handler import log_successful_call
+# --- 結束修改 ---
 
 # --- 1. 設定 (Configuration) ---
 # 將所有可設定的變數集中管理
@@ -20,8 +26,8 @@ load_dotenv()
 
 # LLM 客戶端設定
 # 建議使用環境變數來設定模型名稱，增加靈活性
-FUNC_MODEL = os.getenv("FUNC_MODEL", "llama3.1")
-CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.1")
+FUNC_MODEL = os.getenv("FUNC_MODEL", "nous-hermes-2-pro")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "dolphin-mistral")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "ollama")
 
@@ -112,7 +118,6 @@ def get_pod_resource_usage(input_data: PodResourceInput, metric: str) -> str:
     if metric not in ["cpu", "memory"]:
         return json.dumps({"error": "Invalid metric specified. Must be 'cpu' or 'memory'."})
 
-    # 根據指標選擇不同的 PromQL
     if metric == "cpu":
         query = f'rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{input_data.duration}])'
     else: # memory
@@ -191,6 +196,7 @@ def predict_pod_cpu_usage(input_data: PredictionInput) -> str:
 
     except Exception as e:
         return json.dumps({"error": f"An unexpected error occurred during prediction: {str(e)}"})
+
 
 # --- 4. 工具定義 (Tool Definitions for LLM) ---
 # 這是給 LLM 看的 "API 文件"，描述了每個工具的功能和參數
@@ -273,22 +279,6 @@ FUNC_MAP = {
 
 # --- 5. 對話核心邏輯 (Core Chat Logic) ---
 
-SYSTEM_PROMPT = """
-You are a highly intelligent Kubernetes (k8s) monitoring assistant. Your primary goal is to help users understand the performance and resource consumption of their k8s cluster by calling available tools to fetch real-time data from Prometheus.
-
-**Your Capabilities:**
-- Fetch CPU and Memory usage for specific pods.
-- Identify the top resource-consuming pods in a namespace.
-- Predict future CPU usage for a pod.
-
-**Interaction Rules:**
-1.  **Always be helpful and proactive.**
-2.  **Clarify Ambiguity:** If a user's request is missing necessary information (e.g., "check cpu usage" without specifying a pod), you MUST ask for clarification. Do NOT guess or call a tool with incomplete parameters. Ask questions like: "For which pod and in which namespace are you interested?"
-3.  **Summarize, Don't Just Dump:** When you get data from a tool, do not just dump the raw JSON. Summarize the key information in a clear, human-readable format. Use lists, bold text, and simple language.
-4.  **Acknowledge Tool Usage:** Briefly mention what you are doing. For example: "I'm checking the CPU usage for the 'web-server-1' pod..."
-5.  **Be concise:** Provide the information directly without unnecessary chatter.
-"""
-
 def _is_smalltalk(message: str) -> bool:
     """簡單判斷是否為閒聊"""
     smalltalk_patterns = ["hello", "hi", "who are you", "早安", "你好"]
@@ -302,26 +292,41 @@ def _prune_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             msg["content"] = msg["content"][:MAX_TOOL_SUMMARY_LEN] + "... (truncated)"
             
     # 2. 如果總長度還是太長，從前面開始刪除舊對話
-    # (保留 system prompt 和最後幾輪對話)
     while len(json.dumps(history)) > MAX_TOTAL_JSON_LEN and len(history) > 5:
-        # 刪除 system prompt 後的第一則訊息
         history.pop(1)
         
     # 3. 確保歷史訊息不會超過最大輪數
-    if len(history) > MAX_HISTORY_LEN * 2: # 乘以2因為包含 user 和 assistant
+    if len(history) > MAX_HISTORY_LEN * 2:
         history = history[-MAX_HISTORY_LEN*2:]
 
     return history
 
 def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    """主對話流程函式"""
+    """主對話流程函式 - 已整合 RAG"""
     history = history or []
+
+    # --- 關鍵修改 1: 進行 RAG 檢索 ---
+    print("步驟 1: 從 RAG 系統檢索上下文...")
+    rag_context = rag_system.retrieve(user_message, top_k=3)
+    print(f"檢索到的上下文:\n---\n{rag_context}\n---")
+
+    # --- 關鍵修改 2: 建立包含 RAG 上下文的系統提示 ---
+    system_prompt = f"""
+    You are a highly intelligent Kubernetes (k8s) monitoring assistant. Your primary goal is to help users by calling available tools to fetch data from Prometheus.
+
+    **Interaction Rules:**
+    1.  **Analyze the user's query carefully.**
+    2.  **Refer to the 'Context from Knowledge Base' below.** This context contains critical rules and successful examples from the past. Use it to make the best decision for tool calling.
+    3.  **Clarify Ambiguity:** If necessary information is missing (e.g., 'check cpu usage' without a pod), you MUST ask for clarification.
+    4.  **Summarize, Don't Just Dump:** When you get data from a tool, summarize the key information clearly.
     
-    # 準備 messages
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": user_message}]
+    [Context from Knowledge Base]
+    {rag_context}
+    """
+
+    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_message}]
     
     if _is_smalltalk(user_message):
-        # 閒聊直接回覆
         response = client_chat.chat.completions.create(model=CHAT_MODEL, messages=messages)
         assistant_response = response.choices[0].message.content
         history.append({"role": "user", "content": user_message})
@@ -329,7 +334,7 @@ def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = N
         return {"assistant": assistant_response, "history": history}
 
     # --- 主要 Function Calling 流程 ---
-    # 1. 讓 Function Calling 模型決定是否使用工具
+    print("步驟 2: 呼叫 Function-Calling LLM (帶有 RAG 上下文)...")
     response_fc = client_fc.chat.completions.create(
         model=FUNC_MODEL,
         messages=messages,
@@ -339,42 +344,52 @@ def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = N
     response_message = response_fc.choices[0].message
     tool_calls = response_message.tool_calls
 
-    # 2. 判斷是否需要呼叫工具
     if not tool_calls:
-        # 如果模型判斷不需要工具，直接由聊天模型生成回答
+        print("步驟 3: LLM 判斷無需呼叫工具，直接回應。")
         response = client_chat.chat.completions.create(model=CHAT_MODEL, messages=messages)
         assistant_response = response.choices[0].message.content
     else:
-        # 3. 執行工具呼叫
-        messages.append(response_message) # 將 assistant 的回覆 (包含 tool_calls) 加入歷史
+        print("步驟 3: LLM 決定呼叫工具。")
+        messages.append(response_message)
         for tool_call in tool_calls:
             function_name = tool_call.function.name
             function_to_call = FUNC_MAP.get(function_name)
             
             if function_to_call:
                 function_args = json.loads(tool_call.function.arguments)
-                function_response = function_to_call(**function_args)
-                messages.append(
-                    {
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": function_response,
-                    }
-                )
+                print(f"執行工具: {function_name}，參數: {function_args}")
+                function_response_str = function_to_call(**function_args)
+                
+                # --- 關鍵修改 3: 記錄成功的 Function Call ---
+                # 簡單假設只要沒報錯就是成功
+                try:
+                    response_json = json.loads(function_response_str)
+                    if "error" not in response_json:
+                        log_successful_call(user_message, f"{function_name}(**{function_args})")
+                        print("成功記錄 Function Call。")
+                except (json.JSONDecodeError, TypeError):
+                    # 如果回傳的不是合法的 JSON，也假設成功並記錄
+                    log_successful_call(user_message, f"{function_name}(**{function_args})")
+                    print("成功記錄 Function Call (非JSON回傳)。")
+                # --- 結束修改 ---
+
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": function_response_str,
+                })
         
-        # 4. 將工具的結果餵給聊天模型，生成最終的自然語言回覆
+        print("步驟 4: 呼叫聊天模型以整理工具回傳結果...")
         final_response = client_chat.chat.completions.create(
             model=CHAT_MODEL,
             messages=messages,
         )
         assistant_response = final_response.choices[0].message.content
 
-    # 5. 更新對話歷史並回傳
     history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": assistant_response})
     
-    # 最後再做一次歷史裁剪
     final_history = _prune_history(history)
     
     return {"assistant": assistant_response, "history": final_history}
@@ -393,5 +408,4 @@ if __name__ == "__main__":
         
         print(f"Assistant: {result['assistant']}")
         
-        # 更新對話歷史
         conversation_history = result['history']
