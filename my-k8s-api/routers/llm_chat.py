@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import logging
 
+#from services.llm_assistant import chat_with_llm
 from services.llm_assistant import chat_with_llm
 
 logger = logging.getLogger(__name__)
