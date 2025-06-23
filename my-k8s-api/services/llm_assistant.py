@@ -11,83 +11,96 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+from sklearn.linear_model import LinearRegression
 
-# --- 1. 設定 (Configuration) ---
-# 將所有可設定的變數集中管理
+# Kubernetes client is required for newly added core tools
+try:
+    from kubernetes import client as k8s_client, config as k8s_config
+    KUBERNETES_AVAILABLE = True
+except ImportError:
+    KUBERNETES_AVAILABLE = False
+
+
+# --- 1. Configuration ---
+# Centralized management of all configurable variables
 
 load_dotenv()
 
-# LLM 客戶端設定
-# 建議使用環境變數來設定模型名稱，增加靈活性
+# LLM Client Settings
 FUNC_MODEL = os.getenv("FUNC_MODEL", "llama3.1")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.1")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "ollama")
 
-# Prometheus 設定
+# Prometheus Settings
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 
-# 對話歷史與內容長度限制
+# Conversation History and Content Length Limits
 MAX_HISTORY_LEN = 20
-MAX_TOOL_SUMMARY_LEN = 400
+MAX_TOOL_SUMMARY_LEN = 500
 MAX_TOTAL_JSON_LEN = 15000
 
-# 初始化 LLM 客戶端
+# Initialize LLM Clients
 client_fc = OpenAI(base_url=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY)
 client_chat = OpenAI(base_url=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY)
 
 
-# --- 2. Prometheus 服務層 (Service Layer) ---
-# 專門負責與 Prometheus 溝通的底層函式
+# --- 2. External Services Layer ---
+# Encapsulates all interactions with external APIs (Prometheus & Kubernetes)
 
 class PrometheusService:
-    """封裝所有與 Prometheus API 的互動"""
-
+    """Encapsulates all interactions with the Prometheus API"""
     def __init__(self, base_url: str):
         self.base_url = base_url
 
     def _request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """統一的請求處理函式"""
         try:
-            url = f"{self.base_url}{endpoint}"
-            response = requests.get(url, params=params, timeout=15)
+            response = requests.get(f"{self.base_url}{endpoint}", params=params, timeout=15)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            # 簡化錯誤回報，只回傳重要的資訊
             return {"status": "error", "error": f"Request failed: {e.__class__.__name__}", "message": str(e)}
 
     def query(self, promql: str) -> Dict[str, Any]:
-        """執行即時查詢 (query)"""
         return self._request("/api/v1/query", {"query": promql})
 
     def query_range(self, promql: str, start: datetime, end: datetime, step: str) -> Dict[str, Any]:
-        """執行範圍查詢 (query_range)"""
-        params = {
-            "query": promql,
-            "start": start.isoformat() + "Z",
-            "end": end.isoformat() + "Z",
-            "step": step,
-        }
+        params = {"query": promql, "start": start.isoformat()+"Z", "end": end.isoformat()+"Z", "step": step}
         return self._request("/api/v1/query_range", params)
 
-# 建立一個全域的 Prometheus 服務實例
+class KubernetesService:
+    """Encapsulates all interactions with the Kubernetes API"""
+    def __init__(self):
+        if not KUBERNETES_AVAILABLE:
+            raise ImportError("Kubernetes client library not found. Please run 'pip install kubernetes'.")
+        k8s_config.load_kube_config()
+        self.core_v1 = k8s_client.CoreV1Api()
+
+    def get_namespaces(self) -> List[str]:
+        return [ns.metadata.name for ns in self.core_v1.list_namespace().items]
+
+    def get_pods_in_namespace(self, namespace: str) -> List[str]:
+        return [pod.metadata.name for pod in self.core_v1.list_namespaced_pod(namespace).items]
+
+# Initialize service instances
 prometheus_service = PrometheusService(PROMETHEUS_URL)
+if KUBERNETES_AVAILABLE:
+    kubernetes_service = KubernetesService()
 
 
-# --- 3. 工具函式 (Tool Functions) & 資料模型 ---
-# 這是我們要給 LLM 使用的工具箱，並搭配 Pydantic 進行參數驗證
+# --- 3. Tool Functions & Data Models ---
+# This is the toolbox we provide to the LLM, with Pydantic for parameter validation
 
-class ToolInputBase(BaseModel):
-    """Pydantic 模型基底，方便共用"""
-    namespace: str = Field(..., description="Kubernetes namespace, e.g., 'default', 'kube-system'.")
+# --- Pydantic Models ---
+class NamespaceInput(BaseModel):
+    namespace: str = Field(..., description="The Kubernetes namespace, e.g., 'default', 'kube-system'.")
 
-class PodResourceInput(ToolInputBase):
+class PodResourceInput(NamespaceInput):
     pod: str = Field(..., description="The name of the pod.")
-    duration: str = Field("5m", description="Time duration for the query, e.g., '5m', '1h', '3d'.")
+    duration: str = Field("5m", description="Time duration for the query, e.g., '5m', '1h'.")
 
-class TopKInput(ToolInputBase):
+class TopKInput(NamespaceInput):
     k: int = Field(3, description="The number of top pods to return.", ge=1)
     duration: str = Field("5m", description="Time window for rate calculation, e.g., '5m', '1h'.")
 
@@ -95,37 +108,86 @@ class PredictionInput(PodResourceInput):
     future_duration: str = Field("1h", description="The future time window to predict, e.g., '30m', '2h'.")
     step: str = Field("5m", description="The time interval for data points in historical data.")
 
+
+# --- Helper Functions ---
 def _duration_to_seconds(duration: str) -> int:
-    """將 '1h', '5m' 等格式的時間字串轉換為秒數"""
     units = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
     match = re.match(r"(\d+)([smhdw])", duration)
-    if not match:
-        raise ValueError("Invalid duration format. Use formats like '30s', '10m', '2h', '1d', '1w'.")
+    if not match: raise ValueError("Invalid duration format.")
     value, unit = match.groups()
     return int(value) * units[unit]
 
+def _format_bytes(byte_val: float) -> str:
+    """Converts bytes to a human-readable format (KiB, MiB, GiB)"""
+    if byte_val is None: return "N/A"
+    power = 1024
+    n = 0
+    power_labels = {0: 'B', 1: 'KiB', 2: 'MiB', 3: 'GiB', 4: 'TiB'}
+    while byte_val >= power and n < len(power_labels) -1 :
+        byte_val /= power
+        n += 1
+    return f"{byte_val:.2f} {power_labels[n]}"
+
+# --- Tool Functions ---
+
+# NEW: Tool to list all namespaces
+def list_all_namespaces() -> str:
+    """Lists all available namespaces in the Kubernetes cluster."""
+    if not KUBERNETES_AVAILABLE:
+        return json.dumps({"error": "Kubernetes library not available."})
+    try:
+        namespaces = kubernetes_service.get_namespaces()
+        return json.dumps({"namespaces": namespaces})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to list namespaces: {str(e)}"})
+
+# NEW: Tool to list pods in a specific namespace
+def list_pods_in_namespace(input_data: NamespaceInput) -> str:
+    """Lists all pod names in the specified namespace."""
+    if not KUBERNETES_AVAILABLE:
+        return json.dumps({"error": "Kubernetes library not available."})
+    try:
+        pods = kubernetes_service.get_pods_in_namespace(input_data.namespace)
+        if not pods:
+            return json.dumps({"message": f"No pods found in namespace '{input_data.namespace}'."})
+        return json.dumps({"namespace": input_data.namespace, "pods": pods})
+    except Exception as e:
+        return json.dumps({"error": f"Failed to list pods in namespace '{input_data.namespace}': {str(e)}"})
+
+
+# REFINED: Core tool for getting single pod usage
 def get_pod_resource_usage(input_data: PodResourceInput, metric: str) -> str:
-    """
-    【整合工具】取得指定 Pod 的 CPU 或 Memory 使用率。
-    - 合併了原本的 get_pod_cpu_usage 和 get_pod_memory_usage。
-    """
+    """Retrieves the CPU or Memory usage for a specified Pod."""
     if metric not in ["cpu", "memory"]:
         return json.dumps({"error": "Invalid metric specified. Must be 'cpu' or 'memory'."})
 
-    # 根據指標選擇不同的 PromQL
     if metric == "cpu":
-        query = f'rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{input_data.duration}])'
+        query = f'avg(rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{input_data.duration}]))'
     else: # memory
         query = f'container_memory_usage_bytes{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}'
     
     result = prometheus_service.query(query)
-    return json.dumps(result, indent=2)
+    
+    # REFINED: Parse the result for clarity before returning
+    if result.get("status") == "success" and result.get("data", {}).get("result"):
+        try:
+            value = float(result["data"]["result"][0]["value"][1])
+            if metric == "cpu":
+                # Convert from cores to millicores for readability
+                usage_str = f"{value * 1000:.2f}m"
+                usage_val = value * 1000
+            else:
+                usage_str = _format_bytes(value)
+                usage_val = value
+            return json.dumps({"pod": input_data.pod, "metric": metric, "value": usage_val, "human_readable_value": usage_str})
+        except (IndexError, KeyError, ValueError):
+            return json.dumps({"error": f"No data found for pod '{input_data.pod}' in namespace '{input_data.namespace}'."})
+    return json.dumps(result)
 
+
+# REFINED: Core tool for getting top K pods
 def get_top_k_pods(input_data: TopKInput, metric: str) -> str:
-    """
-    【整合工具】取得指定 Namespace 中，CPU 或 Memory 使用率最高的前 K 個 Pod。
-    - 合併了 get_top_cpu_pods 和 get_top_memory_pods。
-    """
+    """Finds the top K pods with the highest CPU or Memory usage in the specified Namespace."""
     if metric not in ["cpu", "memory"]:
         return json.dumps({"error": "Invalid metric specified. Must be 'cpu' or 'memory'."})
 
@@ -135,263 +197,238 @@ def get_top_k_pods(input_data: TopKInput, metric: str) -> str:
         query = f'topk({input_data.k}, sum by(pod)(container_memory_usage_bytes{{namespace="{input_data.namespace}"}}))'
 
     result = prometheus_service.query(query)
-    return json.dumps(result, indent=2)
 
+    # REFINED: Parse the result for clarity
+    if result.get("status") == "success" and result.get("data", {}).get("result"):
+        pods_data = []
+        for res in result["data"]["result"]:
+            pod_name = res["metric"]["pod"]
+            value = float(res["value"][1])
+            if metric == "cpu":
+                usage_str = f"{value * 1000:.2f}m"
+            else:
+                usage_str = _format_bytes(value)
+            pods_data.append({"pod": pod_name, "value": value, "human_readable_value": usage_str})
+        return json.dumps({"metric": metric, "top_k_pods": pods_data})
+    return json.dumps(result)
+
+
+# REFINED: Core tool for prediction
 def predict_pod_cpu_usage(input_data: PredictionInput) -> str:
-    """
-    預測未來 Pod 的 CPU 使用率 (使用簡易的線性回歸)。
-    """
+    """Predicts future CPU usage for a specific pod (using simple linear regression)."""
     try:
-        # 1. 取得歷史資料
         end = datetime.utcnow()
         start = end - timedelta(seconds=_duration_to_seconds(input_data.duration))
         query = f'rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{input_data.step}])'
-        
         result = prometheus_service.query_range(query, start, end, input_data.step)
 
-        if result.get("status") != "success" or not result["data"]["result"]:
-            return json.dumps({"error": f"No historical data found for pod '{input_data.pod}' in namespace '{input_data.namespace}'."})
-
+        if result.get("status") != "success" or not result.get("data", {}).get("result"):
+            return json.dumps({"error": f"No historical data for pod '{input_data.pod}' in '{input_data.namespace}'."})
+        
         values = result["data"]["result"][0]["values"]
         if len(values) < 2:
-            return json.dumps({"error": "Not enough historical data to make a prediction."})
+            return json.dumps({"error": "Not enough historical data to predict."})
 
-        # 2. 建立 DataFrame 並訓練模型
         df = pd.DataFrame(values, columns=["timestamp", "value"])
         df["timestamp"] = pd.to_numeric(df["timestamp"])
         df["value"] = pd.to_numeric(df["value"])
-
-        X = df[["timestamp"]]
-        y = df["value"]
+        X, y = df[["timestamp"]], df["value"]
         
-        model = LinearRegression()
-        model.fit(X, y)
-
-        # 3. 產生未來時間點並預測
+        model = LinearRegression().fit(X, y)
+        
         future_step_seconds = _duration_to_seconds(input_data.step)
         future_steps_count = _duration_to_seconds(input_data.future_duration) // future_step_seconds
         last_timestamp = df["timestamp"].iloc[-1]
-        
         future_timestamps = np.arange(1, future_steps_count + 1) * future_step_seconds + last_timestamp
-        future_X = pd.DataFrame(future_timestamps, columns=["timestamp"])
-        
-        predictions = model.predict(future_X)
+        predictions = model.predict(pd.DataFrame(future_timestamps, columns=["timestamp"]))
+        predictions[predictions < 0] = 0
 
-        # 4. 格式化輸出
+        # REFINED: Simplified and clearer output
+        avg_prediction = np.mean(predictions)
+        peak_prediction = np.max(predictions)
+        
         output = {
             "pod": input_data.pod,
-            "prediction_window_start": datetime.fromtimestamp(future_timestamps[0]).isoformat(),
-            "prediction_window_end": datetime.fromtimestamp(future_timestamps[-1]).isoformat(),
-            "predictions": [
-                {"timestamp": datetime.fromtimestamp(ts).isoformat(), "predicted_cpu_usage": round(p, 4)}
-                for ts, p in zip(future_timestamps, predictions)
-            ]
+            "prediction_window": f"next {input_data.future_duration}",
+            "average_predicted_cpu": f"{avg_prediction * 1000:.2f}m",
+            "peak_predicted_cpu": f"{peak_prediction * 1000:.2f}m",
+            "trend": "increasing" if model.coef_[0] > 0 else "decreasing"
         }
         return json.dumps(output, indent=2)
-
     except Exception as e:
-        return json.dumps({"error": f"An unexpected error occurred during prediction: {str(e)}"})
+        return json.dumps({"error": f"Prediction failed: {e}"})
 
-# --- 4. 工具定義 (Tool Definitions for LLM) ---
-# 這是給 LLM 看的 "API 文件"，描述了每個工具的功能和參數
+
+# --- 4. Tool Definitions and Mapping ---
 
 TOOLS_DEF = [
     {
-        "type": "function",
-        "function": {
-            "name": "get_pod_resource_usage",
-            "description": "Fetches the current CPU or Memory usage for a specific pod in a namespace.",
+        "type": "function", "function": {
+            "name": "list_all_namespaces",
+            "description": "Lists all available namespaces in the Kubernetes cluster. Use when the user wants to know which namespaces are available, or asks about a non-existent namespace.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function", "function": {
+            "name": "list_pods_in_namespace",
+            "description": "Lists all pods in the specified namespace. Use when the user provides a namespace but no pod name, or asks what pods are in a certain namespace.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "metric": {"type": "string", "enum": ["cpu", "memory"]},
-                    "namespace": {"type": "string"},
-                    "pod": {"type": "string"},
-                    "duration": {"type": "string", "default": "5m"},
-                },
-                "required": ["metric", "namespace", "pod"],
+                "properties": {"namespace": {"type": "string"}},
+                "required": ["namespace"],
             },
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "get_top_k_pods",
-            "description": "Finds the top K pods with the highest CPU or Memory usage in a given namespace.",
+        "type": "function", "function": {
+            "name": "get_pod_resource_usage",
+            "description": "Retrieves the average CPU or current Memory usage for a specific pod within a given time range.",
             "parameters": {
-                "type": "object",
-                "properties": {
+                "type": "object", "properties": {
+                    "metric": {"type": "string", "enum": ["cpu", "memory"]},
+                    "namespace": {"type": "string"}, "pod": {"type": "string"},
+                    "duration": {"type": "string", "default": "5m"},
+                }, "required": ["metric", "namespace", "pod"],
+            },
+        },
+    },
+    {
+        "type": "function", "function": {
+            "name": "get_top_k_pods",
+            "description": "Finds the top K pods with the highest CPU or Memory usage in the specified namespace.",
+            "parameters": {
+                "type": "object", "properties": {
                     "metric": {"type": "string", "enum": ["cpu", "memory"]},
                     "namespace": {"type": "string"},
                     "k": {"type": "integer", "default": 3},
                     "duration": {"type": "string", "default": "5m"},
-                },
-                "required": ["metric", "namespace"],
+                }, "required": ["metric", "namespace"],
             },
         },
     },
     {
-        "type": "function",
-        "function": {
+        "type": "function", "function": {
             "name": "predict_pod_cpu_usage",
-            "description": "Predicts the future CPU usage for a pod based on its historical data using linear regression.",
+            "description": "Predicts the CPU usage trend, average, and peak for a specific pod over a future period based on historical data.",
             "parameters": {
-                "type": "object",
-                "properties": {
-                    "namespace": {"type": "string"},
-                    "pod": {"type": "string"},
+                "type": "object", "properties": {
+                    "namespace": {"type": "string"}, "pod": {"type": "string"},
                     "duration": {"type": "string", "default": "1h"},
-                    "future_duration": {"type": "string", "default": "1h"},
+                    "future_duration": {"type": "string", "default": "30m"},
                     "step": {"type": "string", "default": "5m"},
-                },
-                "required": ["namespace", "pod"],
+                }, "required": ["namespace", "pod"],
             },
         },
     },
 ]
 
-# 將工具名稱映射到實際的 Python 函式
-# 注意：這裡我們需要一個 wrapper 來處理 Pydantic 模型
-def _tool_wrapper(func, model_class, **kwargs):
-    """一個 wrapper，用於將字典參數轉換為 Pydantic 模型"""
+def _tool_wrapper(func, model_class=None, **kwargs):
     try:
-        # 如果 metric 在 kwargs 中，將其作為獨立參數傳遞
-        metric = kwargs.pop("metric", None)
-        model_instance = model_class(**kwargs)
-        if metric:
-            return func(model_instance, metric=metric)
-        return func(model_instance)
-    except Exception as e:
+        if model_class:
+            metric = kwargs.pop("metric", None)
+            model_instance = model_class(**kwargs)
+            if metric: return func(model_instance, metric=metric)
+            return func(model_instance)
+        # For functions with no parameters like list_all_namespaces
+        return func()
+    except ValidationError as e:
         return json.dumps({"error": "Parameter validation failed", "details": str(e)})
+    except Exception as e:
+        return json.dumps({"error": "Function execution failed", "details": str(e)})
 
 FUNC_MAP = {
+    "list_all_namespaces": lambda **kwargs: _tool_wrapper(list_all_namespaces, **kwargs),
+    "list_pods_in_namespace": lambda **kwargs: _tool_wrapper(list_pods_in_namespace, NamespaceInput, **kwargs),
     "get_pod_resource_usage": lambda **kwargs: _tool_wrapper(get_pod_resource_usage, PodResourceInput, **kwargs),
     "get_top_k_pods": lambda **kwargs: _tool_wrapper(get_top_k_pods, TopKInput, **kwargs),
     "predict_pod_cpu_usage": lambda **kwargs: _tool_wrapper(predict_pod_cpu_usage, PredictionInput, **kwargs),
 }
 
 
-# --- 5. 對話核心邏輯 (Core Chat Logic) ---
+# --- 5. Core Chat Logic ---
 
 SYSTEM_PROMPT = """
-You are a highly intelligent Kubernetes (k8s) monitoring assistant. Your primary goal is to help users understand the performance and resource consumption of their k8s cluster by calling available tools to fetch real-time data from Prometheus.
+You are a very smart and patient Kubernetes monitoring assistant. Your goal is to help users understand the status of their clusters in the most friendly and human-like way by calling tools.
 
-**Your Capabilities:**
-- Fetch CPU and Memory usage for specific pods.
-- Identify the top resource-consuming pods in a namespace.
-- Predict future CPU usage for a pod.
+**Core Interaction Principles:**
 
-**Interaction Rules:**
-1.  **Always be helpful and proactive.**
-2.  **Clarify Ambiguity:** If a user's request is missing necessary information (e.g., "check cpu usage" without specifying a pod), you MUST ask for clarification. Do NOT guess or call a tool with incomplete parameters. Ask questions like: "For which pod and in which namespace are you interested?"
-3.  **Summarize, Don't Just Dump:** When you get data from a tool, do not just dump the raw JSON. Summarize the key information in a clear, human-readable format. Use lists, bold text, and simple language.
-4.  **Acknowledge Tool Usage:** Briefly mention what you are doing. For example: "I'm checking the CPU usage for the 'web-server-1' pod..."
-5.  **Be concise:** Provide the information directly without unnecessary chatter.
+1.  **Proactive Guidance, Never Leave the User Stuck:**
+    * If the information the user wants to query is incomplete (e.g., just says "check pod cpu" without providing a pod name or namespace), **you must never just report an error**.
+    * Your standard operating procedure is:
+        1.  If the `namespace` is uncertain, first call the `list_all_namespaces` tool, then ask the user: "Okay, which namespace would you like to query? Here are the available options: ...".
+        2.  If the user provides a `namespace` but no `pod` name, call the `list_pods_in_namespace` tool, then ask the user: "No problem, I found these pods in '{namespace}', which one would you like to check? ...".
+        3.  Through a question-and-answer process, guide the user to provide all necessary information, and then call the final query tool.
+
+2.  **Data Interpretation, Not Dumping:**
+    * When a tool returns data, your task is to transform it into human-understandable language.
+    * For example, convert `{"value": 0.15}` to "CPU usage is approximately 150m (millicores)."
+    * Convert `{"value": 524288000}` to "Memory usage is approximately 500 MiB."
+    * Present Top-K results in a list, and describe prediction results with summary language (e.g., "It looks like CPU usage will continue to rise over the next 30 minutes, with an estimated average of...").
+
+3.  **Always Friendly and Patient:** Your tone is always helpful. Even if you ask multiple times, maintain patience. Your goal is to make the user feel like they are talking to an expert colleague.
 """
 
-def _is_smalltalk(message: str) -> bool:
-    """簡單判斷是否為閒聊"""
-    smalltalk_patterns = ["hello", "hi", "who are you", "早安", "你好"]
-    return message.lower().strip() in smalltalk_patterns
-
-def _prune_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """裁剪對話歷史，防止內容過長"""
-    # 1. 摘要工具回傳的內容
-    for msg in history:
-        if msg.get("role") == "tool" and len(msg.get("content", "")) > MAX_TOOL_SUMMARY_LEN:
-            msg["content"] = msg["content"][:MAX_TOOL_SUMMARY_LEN] + "... (truncated)"
-            
-    # 2. 如果總長度還是太長，從前面開始刪除舊對話
-    # (保留 system prompt 和最後幾輪對話)
-    while len(json.dumps(history)) > MAX_TOTAL_JSON_LEN and len(history) > 5:
-        # 刪除 system prompt 後的第一則訊息
-        history.pop(1)
-        
-    # 3. 確保歷史訊息不會超過最大輪數
-    if len(history) > MAX_HISTORY_LEN * 2: # 乘以2因為包含 user 和 assistant
-        history = history[-MAX_HISTORY_LEN*2:]
-
-    return history
-
 def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    """主對話流程函式"""
     history = history or []
-    
-    # 準備 messages
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": user_message}]
     
-    if _is_smalltalk(user_message):
-        # 閒聊直接回覆
-        response = client_chat.chat.completions.create(model=CHAT_MODEL, messages=messages)
-        assistant_response = response.choices[0].message.content
-        history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": assistant_response})
-        return {"assistant": assistant_response, "history": history}
+    try:
+        response_fc = client_fc.chat.completions.create(
+            model=FUNC_MODEL,
+            messages=messages,
+            tools=TOOLS_DEF,
+            tool_choice="auto"
+        )
+    except Exception as e:
+        error_message = f"An error occurred while processing your request: {e}"
+        history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": error_message}])
+        return {"assistant": error_message, "history": history}
 
-    # --- 主要 Function Calling 流程 ---
-    # 1. 讓 Function Calling 模型決定是否使用工具
-    response_fc = client_fc.chat.completions.create(
-        model=FUNC_MODEL,
-        messages=messages,
-        tools=TOOLS_DEF,
-        tool_choice="auto"
-    )
     response_message = response_fc.choices[0].message
     tool_calls = response_message.tool_calls
 
-    # 2. 判斷是否需要呼叫工具
     if not tool_calls:
-        # 如果模型判斷不需要工具，直接由聊天模型生成回答
-        response = client_chat.chat.completions.create(model=CHAT_MODEL, messages=messages)
-        assistant_response = response.choices[0].message.content
+        assistant_response = response_message.content or "我不太確定如何回應。可以請您換句話說嗎？"
     else:
-        # 3. 執行工具呼叫
-        messages.append(response_message) # 將 assistant 的回覆 (包含 tool_calls) 加入歷史
+        messages.append(response_message)
         for tool_call in tool_calls:
             function_name = tool_call.function.name
             function_to_call = FUNC_MAP.get(function_name)
-            
             if function_to_call:
-                function_args = json.loads(tool_call.function.arguments)
-                function_response = function_to_call(**function_args)
-                messages.append(
-                    {
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": function_response,
-                    }
-                )
+                try:
+                    function_args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
+                    function_response = function_to_call(**function_args)
+                except Exception as e:
+                    function_response = json.dumps({"error": f"Tool execution error: {e}"})
+                messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": function_name, "content": function_response})
         
-        # 4. 將工具的結果餵給聊天模型，生成最終的自然語言回覆
-        final_response = client_chat.chat.completions.create(
-            model=CHAT_MODEL,
-            messages=messages,
-        )
+        final_response = client_chat.chat.completions.create(model=CHAT_MODEL, messages=messages)
         assistant_response = final_response.choices[0].message.content
 
-    # 5. 更新對話歷史並回傳
-    history.append({"role": "user", "content": user_message})
-    history.append({"role": "assistant", "content": assistant_response})
+    history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": assistant_response}])
     
-    # 最後再做一次歷史裁剪
-    final_history = _prune_history(history)
-    
-    return {"assistant": assistant_response, "history": final_history}
+    # Simple history pruning
+    while len(json.dumps(history)) > MAX_TOTAL_JSON_LEN and len(history) > 4:
+        history.pop(0)
 
-# --- 6. 範例使用 ---
+    return {"assistant": assistant_response, "history": history}
+
+
+# --- 6. Example Usage ---
 if __name__ == "__main__":
+    if not KUBERNETES_AVAILABLE:
+        print("\n⚠️ \033[93mWarning: Kubernetes Python client not installed!\033[0m")
+        print("   Some core functionalities (like querying namespaces and pods) will be unavailable.")
+        print("   Please run: pip install kubernetes\n")
+
     conversation_history = []
-    print("Kubernetes Monitoring Assistant. Type 'exit' to quit.")
+    print("🤖 Kubernetes Monitoring Assistant (Core Version). Type 'exit' to quit.")
+    print("✨ Try asking: 'Check pod cpu' or 'Which pod in default consumes the most memory?'")
 
     while True:
         user_input = input("You: ")
-        if user_input.lower() == "exit":
-            break
-        
+        if user_input.lower() == "exit": break
         result = chat_with_llm(user_input, conversation_history)
-        
-        print(f"Assistant: {result['assistant']}")
-        
-        # 更新對話歷史
+        print(f"\nAssistant: {result['assistant']}\n")
         conversation_history = result['history']
