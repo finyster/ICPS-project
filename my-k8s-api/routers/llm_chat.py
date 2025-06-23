@@ -19,9 +19,9 @@ class ChatResponse(BaseModel):
     history: List[dict]
 
 @router.post("/llm_chat", response_model=ChatResponse)
-def llm_chat(req: ChatRequest):
+async def llm_chat(req: ChatRequest):
     try:
-        result = chat_with_llm(req.user_message, req.history or [])
+        result = await chat_with_llm(req.user_message, req.history or [])
         return ChatResponse(**result)
     except HTTPException:
         raise

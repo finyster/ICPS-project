@@ -27,8 +27,8 @@ load_dotenv()
 
 # LLM 客戶端設定
 # 建議使用環境變數來設定模型名稱，增加靈活性
-FUNC_MODEL = os.getenv("FUNC_MODEL", "nous-hermes-2-pro")
-CHAT_MODEL = os.getenv("CHAT_MODEL", "dolphin-mistral")
+FUNC_MODEL = os.getenv("FUNC_MODEL", "llama3.1:latest")
+CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.1:latest")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "ollama")
 
