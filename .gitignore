@@ -104,3 +104,6 @@ Thumbs.db
 # Database files
 *.db
 *.sqlite3
+
+#other doc
+design_doc.md
