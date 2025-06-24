@@ -96,6 +96,10 @@ if KUBERNETES_AVAILABLE:
 class NamespaceInput(BaseModel):
     namespace: str = Field(..., description="The Kubernetes namespace, e.g., 'default', 'kube-system'.")
 
+# NEW: Pydantic model for Namespace-level resource queries
+class NamespaceResourceInput(NamespaceInput):
+    duration: str = Field("5m", description="Time duration for the query, e.g., '5m', '1h', '2 hours 30 minutes'.")
+
 class PodResourceInput(NamespaceInput):
     pod: str = Field(..., description="The name of the pod.")
     duration: str = Field("5m", description="Time duration for the query, e.g., '5m', '1h'.")
@@ -110,12 +114,65 @@ class PredictionInput(PodResourceInput):
 
 
 # --- Helper Functions ---
-def _duration_to_seconds(duration: str) -> int:
+# MODIFIED: More robust duration parser for PromQL
+def parse_duration_to_promql_format(duration_str: str) -> str:
+    """
+    Parses a human-readable duration string into a PromQL-compatible format (e.g., '1h30m').
+    Handles formats like '25"4 hours ago', '1 hour 30 minutes', '2d5h', '10m'.
+    """
+    # Clean the input string by replacing common separators with spaces
+    cleaned_str = re.sub(r'["\',]', ' ', duration_str)
+    
+    # Regex to find all number-unit pairs
+    pattern = re.compile(
+        r'(\d+)\s*'
+        r'(w|week|weeks|d|day|days|h|hour|hours|m|min|minute|minutes|s|sec|second|seconds)\b',
+        re.IGNORECASE
+    )
+    
+    matches = pattern.findall(cleaned_str)
+    
+    if not matches:
+        # Fallback for simple formats like '5m', '1h' if regex fails
+        if re.match(r"^\d+[smhdw]$", duration_str):
+            return duration_str
+        return "5m" # Default fallback
+
+    unit_map = {
+        'w': 'w', 'week': 'w', 'weeks': 'w',
+        'd': 'd', 'day': 'd', 'days': 'd',
+        'h': 'h', 'hour': 'h', 'hours': 'h',
+        'm': 'm', 'min': 'm', 'minute': 'm', 'minutes': 'm',
+        's': 's', 'sec': 's', 'second': 's', 'seconds': 's',
+    }
+    
+    promql_duration = ""
+    for value, unit_long in matches:
+        unit_short = unit_map[unit_long.lower()]
+        promql_duration += f"{value}{unit_short}"
+        
+    return promql_duration if promql_duration else "5m"
+
+
+# MODIFIED: Upgraded _duration_to_seconds to handle complex formats
+def _duration_to_seconds(duration_str: str) -> int:
+    """
+    Calculates the total seconds from a human-readable duration string.
+    """
+    promql_format = parse_duration_to_promql_format(duration_str)
+    
     units = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
-    match = re.match(r"(\d+)([smhdw])", duration)
-    if not match: raise ValueError("Invalid duration format.")
-    value, unit = match.groups()
-    return int(value) * units[unit]
+    total_seconds = 0
+    
+    # Regex to parse the PromQL format string like '1h30m'
+    parts = re.findall(r'(\d+)([smhdw])', promql_format)
+    if not parts:
+        raise ValueError(f"Invalid duration format after parsing: {promql_format}")
+
+    for value, unit in parts:
+        total_seconds += int(value) * units[unit]
+        
+    return total_seconds
 
 def _format_bytes(byte_val: float) -> str:
     """Converts bytes to a human-readable format (KiB, MiB, GiB)"""
@@ -130,7 +187,6 @@ def _format_bytes(byte_val: float) -> str:
 
 # --- Tool Functions ---
 
-# NEW: Tool to list all namespaces
 def list_all_namespaces() -> str:
     """Lists all available namespaces in the Kubernetes cluster."""
     if not KUBERNETES_AVAILABLE:
@@ -141,7 +197,6 @@ def list_all_namespaces() -> str:
     except Exception as e:
         return json.dumps({"error": f"Failed to list namespaces: {str(e)}"})
 
-# NEW: Tool to list pods in a specific namespace
 def list_pods_in_namespace(input_data: NamespaceInput) -> str:
     """Lists all pod names in the specified namespace."""
     if not KUBERNETES_AVAILABLE:
@@ -154,26 +209,26 @@ def list_pods_in_namespace(input_data: NamespaceInput) -> str:
     except Exception as e:
         return json.dumps({"error": f"Failed to list pods in namespace '{input_data.namespace}': {str(e)}"})
 
-
-# REFINED: Core tool for getting single pod usage
+# MODIFIED: Now uses the robust duration parser
 def get_pod_resource_usage(input_data: PodResourceInput, metric: str) -> str:
     """Retrieves the CPU or Memory usage for a specified Pod."""
     if metric not in ["cpu", "memory"]:
         return json.dumps({"error": "Invalid metric specified. Must be 'cpu' or 'memory'."})
 
+    # Use the robust parser
+    promql_duration = parse_duration_to_promql_format(input_data.duration)
+
     if metric == "cpu":
-        query = f'avg(rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{input_data.duration}]))'
+        query = f'avg(rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{promql_duration}]))'
     else: # memory
         query = f'container_memory_usage_bytes{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}'
     
     result = prometheus_service.query(query)
     
-    # REFINED: Parse the result for clarity before returning
     if result.get("status") == "success" and result.get("data", {}).get("result"):
         try:
             value = float(result["data"]["result"][0]["value"][1])
             if metric == "cpu":
-                # Convert from cores to millicores for readability
                 usage_str = f"{value * 1000:.2f}m"
                 usage_val = value * 1000
             else:
@@ -184,21 +239,55 @@ def get_pod_resource_usage(input_data: PodResourceInput, metric: str) -> str:
             return json.dumps({"error": f"No data found for pod '{input_data.pod}' in namespace '{input_data.namespace}'."})
     return json.dumps(result)
 
+# NEW: Tool to get resource usage for an entire namespace
+def get_namespace_resource_usage(input_data: NamespaceResourceInput, metric: str) -> str:
+    """Retrieves the total aggregated CPU or Memory usage for an entire Namespace."""
+    if metric not in ["cpu", "memory"]:
+        return json.dumps({"error": "Invalid metric specified. Must be 'cpu' or 'memory'."})
 
-# REFINED: Core tool for getting top K pods
+    # Use the robust parser
+    promql_duration = parse_duration_to_promql_format(input_data.duration)
+    
+    if metric == "cpu":
+        # Sum the rate of CPU usage for all pods in the namespace
+        query = f'sum(rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}"}}[{promql_duration}]))'
+    else: # memory
+        # Sum the memory usage for all pods in the namespace
+        query = f'sum(container_memory_usage_bytes{{namespace="{input_data.namespace}"}})'
+        
+    result = prometheus_service.query(query)
+    
+    if result.get("status") == "success" and result.get("data", {}).get("result"):
+        try:
+            value = float(result["data"]["result"][0]["value"][1])
+            if metric == "cpu":
+                usage_str = f"{value * 1000:.2f}m" # total millicores
+                usage_val = value * 1000
+            else:
+                usage_str = _format_bytes(value)
+                usage_val = value
+            return json.dumps({"namespace": input_data.namespace, "metric": f"total_{metric}", "value": usage_val, "human_readable_value": usage_str})
+        except (IndexError, KeyError, ValueError):
+            return json.dumps({"error": f"No data found for namespace '{input_data.namespace}'."})
+    return json.dumps(result)
+
+
+# MODIFIED: Now uses the robust duration parser
 def get_top_k_pods(input_data: TopKInput, metric: str) -> str:
     """Finds the top K pods with the highest CPU or Memory usage in the specified Namespace."""
     if metric not in ["cpu", "memory"]:
         return json.dumps({"error": "Invalid metric specified. Must be 'cpu' or 'memory'."})
 
+    # Use the robust parser
+    promql_duration = parse_duration_to_promql_format(input_data.duration)
+
     if metric == "cpu":
-        query = f'topk({input_data.k}, sum by(pod)(rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}"}}[{input_data.duration}])))'
+        query = f'topk({input_data.k}, sum by(pod)(rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}"}}[{promql_duration}])))'
     else: # memory
         query = f'topk({input_data.k}, sum by(pod)(container_memory_usage_bytes{{namespace="{input_data.namespace}"}}))'
 
     result = prometheus_service.query(query)
 
-    # REFINED: Parse the result for clarity
     if result.get("status") == "success" and result.get("data", {}).get("result"):
         pods_data = []
         for res in result["data"]["result"]:
@@ -213,14 +302,22 @@ def get_top_k_pods(input_data: TopKInput, metric: str) -> str:
     return json.dumps(result)
 
 
-# REFINED: Core tool for prediction
+# MODIFIED: Now uses the robust duration-to-seconds converter
 def predict_pod_cpu_usage(input_data: PredictionInput) -> str:
     """Predicts future CPU usage for a specific pod (using simple linear regression)."""
     try:
+        # Use robust duration-to-seconds converter
+        history_seconds = _duration_to_seconds(input_data.duration)
+        future_seconds = _duration_to_seconds(input_data.future_duration)
+        step_seconds = _duration_to_seconds(input_data.step)
+
         end = datetime.utcnow()
-        start = end - timedelta(seconds=_duration_to_seconds(input_data.duration))
-        query = f'rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{input_data.step}])'
-        result = prometheus_service.query_range(query, start, end, input_data.step)
+        start = end - timedelta(seconds=history_seconds)
+        # Use a PromQL-compatible step format
+        promql_step = parse_duration_to_promql_format(input_data.step)
+        
+        query = f'rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{promql_step}])'
+        result = prometheus_service.query_range(query, start, end, promql_step)
 
         if result.get("status") != "success" or not result.get("data", {}).get("result"):
             return json.dumps({"error": f"No historical data for pod '{input_data.pod}' in '{input_data.namespace}'."})
@@ -236,14 +333,12 @@ def predict_pod_cpu_usage(input_data: PredictionInput) -> str:
         
         model = LinearRegression().fit(X, y)
         
-        future_step_seconds = _duration_to_seconds(input_data.step)
-        future_steps_count = _duration_to_seconds(input_data.future_duration) // future_step_seconds
+        future_steps_count = future_seconds // step_seconds
         last_timestamp = df["timestamp"].iloc[-1]
-        future_timestamps = np.arange(1, future_steps_count + 1) * future_step_seconds + last_timestamp
+        future_timestamps = np.arange(1, future_steps_count + 1) * step_seconds + last_timestamp
         predictions = model.predict(pd.DataFrame(future_timestamps, columns=["timestamp"]))
         predictions[predictions < 0] = 0
 
-        # REFINED: Simplified and clearer output
         avg_prediction = np.mean(predictions)
         peak_prediction = np.max(predictions)
         
@@ -261,6 +356,7 @@ def predict_pod_cpu_usage(input_data: PredictionInput) -> str:
 
 # --- 4. Tool Definitions and Mapping ---
 
+# MODIFIED: Added the new namespace resource usage tool
 TOOLS_DEF = [
     {
         "type": "function", "function": {
@@ -277,6 +373,20 @@ TOOLS_DEF = [
                 "type": "object",
                 "properties": {"namespace": {"type": "string"}},
                 "required": ["namespace"],
+            },
+        },
+    },
+    # NEW TOOL DEFINITION
+    {
+        "type": "function", "function": {
+            "name": "get_namespace_resource_usage",
+            "description": "Retrieves the total aggregated CPU or Memory usage for all pods combined within an entire namespace. Use this when the user asks about the resource consumption of a namespace itself, not a specific pod.",
+            "parameters": {
+                "type": "object", "properties": {
+                    "metric": {"type": "string", "enum": ["cpu", "memory"]},
+                    "namespace": {"type": "string"},
+                    "duration": {"type": "string", "default": "5m", "description": "Time window for the query, e.g., '10m', '1 hour'"},
+                }, "required": ["metric", "namespace"],
             },
         },
     },
@@ -337,9 +447,11 @@ def _tool_wrapper(func, model_class=None, **kwargs):
     except Exception as e:
         return json.dumps({"error": "Function execution failed", "details": str(e)})
 
+# MODIFIED: Added the new namespace function to the map
 FUNC_MAP = {
     "list_all_namespaces": lambda **kwargs: _tool_wrapper(list_all_namespaces, **kwargs),
     "list_pods_in_namespace": lambda **kwargs: _tool_wrapper(list_pods_in_namespace, NamespaceInput, **kwargs),
+    "get_namespace_resource_usage": lambda **kwargs: _tool_wrapper(get_namespace_resource_usage, NamespaceResourceInput, **kwargs), # NEW
     "get_pod_resource_usage": lambda **kwargs: _tool_wrapper(get_pod_resource_usage, PodResourceInput, **kwargs),
     "get_top_k_pods": lambda **kwargs: _tool_wrapper(get_top_k_pods, TopKInput, **kwargs),
     "predict_pod_cpu_usage": lambda **kwargs: _tool_wrapper(predict_pod_cpu_usage, PredictionInput, **kwargs),
@@ -353,20 +465,22 @@ You are a very smart and patient Kubernetes monitoring assistant. Your goal is t
 
 **Core Interaction Principles:**
 
-1.  **Proactive Guidance, Never Leave the User Stuck:**
+1.  **Understand User Intent:** Carefully distinguish whether the user is asking about a specific `pod` or an entire `namespace`. Use the `get_namespace_resource_usage` tool for namespace-level queries.
+
+2.  **Proactive Guidance, Never Leave the User Stuck:**
     * If the information the user wants to query is incomplete (e.g., just says "check pod cpu" without providing a pod name or namespace), **you must never just report an error**.
     * Your standard operating procedure is:
         1.  If the `namespace` is uncertain, first call the `list_all_namespaces` tool, then ask the user: "Okay, which namespace would you like to query? Here are the available options: ...".
-        2.  If the user provides a `namespace` but no `pod` name, call the `list_pods_in_namespace` tool, then ask the user: "No problem, I found these pods in '{namespace}', which one would you like to check? ...".
+        2.  If the user provides a `namespace` but no `pod` name, and their query seems to be about individual pods (e.g., "which pod uses most memory"), call the `list_pods_in_namespace` tool to provide options: "No problem, I found these pods in '{namespace}', which one would you like to check? ...".
         3.  Through a question-and-answer process, guide the user to provide all necessary information, and then call the final query tool.
 
-2.  **Data Interpretation, Not Dumping:**
+3.  **Data Interpretation, Not Dumping:**
     * When a tool returns data, your task is to transform it into human-understandable language.
     * For example, convert `{"value": 0.15}` to "CPU usage is approximately 150m (millicores)."
     * Convert `{"value": 524288000}` to "Memory usage is approximately 500 MiB."
     * Present Top-K results in a list, and describe prediction results with summary language (e.g., "It looks like CPU usage will continue to rise over the next 30 minutes, with an estimated average of...").
 
-3.  **Always Friendly and Patient:** Your tone is always helpful. Even if you ask multiple times, maintain patience. Your goal is to make the user feel like they are talking to an expert colleague.
+4.  **Always Friendly and Patient:** Your tone is always helpful. Even if you ask multiple times, maintain patience. Your goal is to make the user feel like they are talking to an expert colleague.
 """
 
 def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -389,7 +503,7 @@ def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = N
     tool_calls = response_message.tool_calls
 
     if not tool_calls:
-        assistant_response = response_message.content or "我不太確定如何回應。可以請您換句話說嗎？"
+        assistant_response = response_message.content or "I'm not quite sure how to respond. Could you please rephrase?"
     else:
         messages.append(response_message)
         for tool_call in tool_calls:
@@ -423,8 +537,8 @@ if __name__ == "__main__":
         print("   Please run: pip install kubernetes\n")
 
     conversation_history = []
-    print("🤖 Kubernetes Monitoring Assistant (Core Version). Type 'exit' to quit.")
-    print("✨ Try asking: 'Check pod cpu' or 'Which pod in default consumes the most memory?'")
+    print("🤖 Kubernetes Monitoring Assistant (Upgraded Version). Type 'exit' to quit.")
+    print("✨ Try asking: 'What's the total CPU usage of the monitoring namespace over the last day?' or 'Check pod cpu since 25\"4 hours ago'")
 
     while True:
         user_input = input("You: ")
