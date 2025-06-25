@@ -46,3 +46,28 @@ Can you generate a CSV report of the CPU and Memory usage for the pod busybox-cp
 33. Show the top 2 memory-consuming pods in `default` now.
 34. Give me a CSV link for pod `prometheus-my-kube-prom-stack-kube-pr-prometheus-0` in `monitoring`.
 35. Generate a CSV download link for `my-kube-prom-stack-grafana-7cc9f485fc-zc2hx` in namespace `monitoring` with 1h range.
+36. Create a Horizontal Pod Autoscaler for the `ytmp3-app` deployment in the `default` namespace, with a target CPU of 75% and a maximum of 8 replicas.
+37. Predict the CPU usage for pod `coredns-6f6b679f8f-s6x47` in the `kube-system` namespace for the next 3 hours.
+38. What is the memory usage of node `minikube-m02` over the last 6 hours?
+39. My `ytmp3-app-57dd674448-wmlrf` pod in the `default` namespace seems slow. Can you investigate its CPU and memory usage for the past 90 minutes?
+40. Are there any pods with unusual resource spikes in the `monitoring` namespace recently?
+41. After identifying the top 3 CPU pods in the `default` namespace, generate a CSV report for the top one covering the last 24 hours.
+42. Compare the total memory usage of the `kube-system` namespace with the `monitoring` namespace over the last day.
+43. Create an HPA for the `bench-cpu` deployment in the `benchmark` namespace, targeting 60% CPU utilization, with replicas between 2 and 5.
+44. What is the current CPU usage of any `my-k8s-api-deployment` pod in the `api-monitoring` namespace?
+45. Show me the memory usage trend for pods under the `my-k8s-api-deployment` in the `api-monitoring` namespace over the last 6 hours.
+46. What is the CPU usage of pods from the `bench-cpu` deployment in the `benchmark` namespace?
+47. Check the memory usage of any `bench-mem` pod in the `benchmark` namespace.
+48. What is the CPU and memory usage of the `svc-hello` pod in the `service` namespace?
+49. List the current CPU utilization for all pods belonging to the `svc-nginx` deployment in the `service` namespace.
+50. Generate a CSV report for the `bench-io` pod in the `benchmark` namespace covering the last 24 hours.
+51. What is the memory consumption of any `ytmp3-app` pod in the `default` namespace?
+52. Using the 'query_resource' tool, what is the current memory usage of the node named 'minikube-m01'?
+53. Show me a 7-day resource usage trend for the entire 'service' namespace.
+54. Identify the node with the highest CPU load right now, and then list the top 3 pods running on that specific node.
+55. Create a CSV export for the CPU usage of pod `alertmanager-my-kube-prom-stack-kube-pr-alertmanager-0` in the `monitoring` namespace over the past 3 days.
+56. Predict the CPU requirements for the `svc-nginx-7ff9b5dcc9-fkrsp` pod in the `service` namespace for the next 6 hours.
+57. My `bench-cpu` deployment in the `benchmark` namespace is underperforming. Give me its CPU and memory metrics for the last 12 hours.
+58. Compare the current CPU usage of any `svc-hello` pod against any `svc-nginx` pod in the `service` namespace.
+59. Set up a Horizontal Pod Autoscaler for the 'bench-mem' deployment in the 'benchmark' namespace, targeting 250Mi of memory, scaling from 2 to 5 pods.
+60. What's the resource footprint (CPU and Memory) for the `my-k8s-api-deployment` in the `api-monitoring` namespace?

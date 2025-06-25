@@ -342,7 +342,7 @@ await loadMetrics();
 })();
 
 
-// ✅ Enter 送出、Shift+Enter 換行（ChatGPT 輸入體驗）
+// ✅ Enter 送出、Shift+Enter 換行
 $msgInput.on('keydown', function(e){
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();           // 阻止換行
