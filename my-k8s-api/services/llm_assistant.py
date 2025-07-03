@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
 from sklearn.linear_model import LinearRegression
+from statsmodels.tsa.ar_model import AutoReg, ar_select_order
 
 # Kubernetes client is required for newly added core tools
 try:
@@ -302,57 +303,124 @@ def get_top_k_pods(input_data: TopKInput, metric: str) -> str:
     return json.dumps(result)
 
 
-# MODIFIED: Now uses the robust duration-to-seconds converter
+# predict_pod_cpu_usage (Upgraded Version)
+
 def predict_pod_cpu_usage(input_data: PredictionInput) -> str:
-    """Predicts future CPU usage for a specific pod (using simple linear regression)."""
+    """
+    使用動態選擇的模型預測指定 Pod 的未來 CPU 使用率。
+    此函式會優先嘗試使用強大的自我迴歸 (AR) 模型，但在歷史資料有限時，
+    會優雅地降級到更簡單的線性迴歸模型。
+    輸出結果經過豐富化，包含最後已知值和模型信賴度等情境資訊。
+    """
     try:
-        # Use robust duration-to-seconds converter
+        # --- 1. 抓取資料 ---
         history_seconds = _duration_to_seconds(input_data.duration)
         future_seconds = _duration_to_seconds(input_data.future_duration)
         step_seconds = _duration_to_seconds(input_data.step)
 
         end = datetime.utcnow()
         start = end - timedelta(seconds=history_seconds)
-        # Use a PromQL-compatible step format
         promql_step = parse_duration_to_promql_format(input_data.step)
         
         query = f'rate(container_cpu_usage_seconds_total{{namespace="{input_data.namespace}", pod="{input_data.pod}"}}[{promql_step}])'
         result = prometheus_service.query_range(query, start, end, promql_step)
 
         if result.get("status") != "success" or not result.get("data", {}).get("result"):
-            return json.dumps({"error": f"No historical data for pod '{input_data.pod}' in '{input_data.namespace}'."})
+            return json.dumps({
+                "status": "failure",
+                "error": "No historical data found",
+                "message": f"Could not find any historical data for pod '{input_data.pod}' in namespace '{input_data.namespace}'."
+            })
         
         values = result["data"]["result"][0]["values"]
-        if len(values) < 2:
-            return json.dumps({"error": "Not enough historical data to predict."})
+        data_points_count = len(values)
+
+        # --- 優雅降級邏輯 ---
+
+        # [C計畫] 最終失敗：資料不足以使用任何模型
+        if data_points_count < 2:
+            return json.dumps({
+                "status": "failure",
+                "error": "Insufficient data",
+                "message": f"Prediction failed. At least 2 data points are required, but only found {data_points_count}."
+            })
 
         df = pd.DataFrame(values, columns=["timestamp", "value"])
         df["timestamp"] = pd.to_numeric(df["timestamp"])
         df["value"] = pd.to_numeric(df["value"])
-        X, y = df[["timestamp"]], df["value"]
         
-        model = LinearRegression().fit(X, y)
-        
-        future_steps_count = future_seconds // step_seconds
-        last_timestamp = df["timestamp"].iloc[-1]
-        future_timestamps = np.arange(1, future_steps_count + 1) * step_seconds + last_timestamp
-        predictions = model.predict(pd.DataFrame(future_timestamps, columns=["timestamp"]))
-        predictions[predictions < 0] = 0
+        last_known_value = df["value"].iloc[-1]
 
-        avg_prediction = np.mean(predictions)
-        peak_prediction = np.max(predictions)
-        
-        output = {
-            "pod": input_data.pod,
-            "prediction_window": f"next {input_data.future_duration}",
-            "average_predicted_cpu": f"{avg_prediction * 1000:.2f}m",
-            "peak_predicted_cpu": f"{peak_prediction * 1000:.2f}m",
-            "trend": "increasing" if model.coef_[0] > 0 else "decreasing"
-        }
-        return json.dumps(output, indent=2)
+        # [A計畫] 首選策略：資料充足時使用 AR 模型
+        if data_points_count >= 10:
+            try:
+                cpu_usage_series = df["value"]
+                lags_selector = ar_select_order(cpu_usage_series, maxlag=10, ic='aic', glob=True)
+                best_lags = lags_selector.ar_lags or [1]
+                
+                model = AutoReg(cpu_usage_series, lags=best_lags, trend='c').fit()
+                
+                future_steps_count = future_seconds // step_seconds
+                predictions = model.predict(start=data_points_count, end=data_points_count + future_steps_count - 1)
+                predictions[predictions < 0] = 0
+                
+                # 更精準的趨勢判斷
+                trend = "increasing" if predictions.iloc[-1] > last_known_value else "decreasing"
+                
+                output = {
+                    "status": "success",
+                    "pod": input_data.pod,
+                    "last_known_cpu": f"{last_known_value * 1000:.2f}m",
+                    "prediction": {
+                        "window": f"for the next {input_data.future_duration}",
+                        "average_cpu": f"{np.mean(predictions) * 1000:.2f}m",
+                        "peak_cpu": f"{np.max(predictions) * 1000:.2f}m",
+                        "trend": trend,
+                    },
+                    "model_details": {
+                        "model_used": "AutoRegression",
+                        "confidence": "High",
+                        "message": f"Prediction based on a robust model using {data_points_count} data points (lags: {best_lags})."
+                    }
+                }
+                return json.dumps(output, indent=2)
+            except Exception as ar_error:
+                # 如果 AR 模型意外失敗，允許降級到 Plan B
+                pass
+
+        # [B計畫] 備案策略：資料有限時使用線性迴歸
+        if 2 <= data_points_count < 10:
+            X, y = df[["timestamp"]], df["value"]
+            model = LinearRegression().fit(X, y)
+            
+            future_steps_count = future_seconds // step_seconds
+            last_timestamp = df["timestamp"].iloc[-1]
+            future_timestamps = np.arange(1, future_steps_count + 1) * step_seconds + last_timestamp
+            predictions = model.predict(pd.DataFrame(future_timestamps, columns=["timestamp"]))
+            predictions[predictions < 0] = 0
+
+            trend = "increasing" if model.coef_[0] > 0 else "decreasing"
+
+            output = {
+                "status": "success",
+                "pod": input_data.pod,
+                "last_known_cpu": f"{last_known_value * 1000:.2f}m",
+                "prediction": {
+                    "window": f"for the next {input_data.future_duration}",
+                    "average_cpu": f"{np.mean(predictions) * 1000:.2f}m",
+                    "peak_cpu": f"{np.max(predictions) * 1000:.2f}m",
+                    "trend": trend,
+                },
+                "model_details": {
+                    "model_used": "Linear Regression",
+                    "confidence": "Low",
+                    "message": f"Used a basic trend model due to limited data ({data_points_count} points). Forecast indicates a general direction, not precise values."
+                }
+            }
+            return json.dumps(output, indent=2)
+
     except Exception as e:
-        return json.dumps({"error": f"Prediction failed: {e}"})
-
+        return json.dumps({"status": "failure", "error": "Prediction function failed", "message": str(e)})
 
 # --- 4. Tool Definitions and Mapping ---
 
@@ -483,11 +551,18 @@ You are a very smart and patient Kubernetes monitoring assistant. Your goal is t
 4.  **Always Friendly and Patient:** Your tone is always helpful. Even if you ask multiple times, maintain patience. Your goal is to make the user feel like they are talking to an expert colleague.
 """
 
+# In services/llm_assistant.py
+
 def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """
+    Handles the chat logic with the LLM, including a two-step process for tool use.
+    This version corrects the logic flow to prevent errors when no tools are called.
+    """
     history = history or []
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": user_message}]
     
     try:
+        # --- First Call: Decide on tools ---
         response_fc = client_fc.chat.completions.create(
             model=FUNC_MODEL,
             messages=messages,
@@ -495,17 +570,27 @@ def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = N
             tool_choice="auto"
         )
     except Exception as e:
-        error_message = f"An error occurred while processing your request: {e}"
+        error_message = f"An error occurred during the initial tool-call request: {e}"
         history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": error_message}])
         return {"assistant": error_message, "history": history}
 
     response_message = response_fc.choices[0].message
     tool_calls = response_message.tool_calls
 
-    if not tool_calls:
-        assistant_response = response_message.content or "I'm not quite sure how to respond. Could you please rephrase?"
-    else:
-        messages.append(response_message)
+    # --- Logic Correction ---
+    # Append the assistant's first response (which may include the decision to call tools).
+    # We must convert the response object to a dictionary to handle potential None content.
+    response_message_dict = response_message.model_dump()
+    
+    # CRITICAL FIX: Prevent 'content: null' error by replacing None with an empty string.
+    # This is the direct cause of the `invalid message content type: <nil>` error.
+    if response_message_dict.get("content") is None:
+        response_message_dict["content"] = ""
+        
+    messages.append(response_message_dict)
+
+    # If the model decided to call tools, execute them and append the results.
+    if tool_calls:
         for tool_call in tool_calls:
             function_name = tool_call.function.name
             function_to_call = FUNC_MAP.get(function_name)
@@ -515,19 +600,38 @@ def chat_with_llm(user_message: str, history: Optional[List[Dict[str, Any]]] = N
                     function_response = function_to_call(**function_args)
                 except Exception as e:
                     function_response = json.dumps({"error": f"Tool execution error: {e}"})
-                messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": function_name, "content": function_response})
-        
-        final_response = client_chat.chat.completions.create(model=CHAT_MODEL, messages=messages)
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": function_response
+                })
+
+    # --- Second Call: Generate Final User-Facing Response ---
+    # This call now runs consistently, whether tools were used or not.
+    try:
+        final_response = client_chat.chat.completions.create(
+            model=CHAT_MODEL, 
+            messages=messages
+        )
         assistant_response = final_response.choices[0].message.content
+    except Exception as e:
+        error_message = f"An error occurred during the final response generation: {e}"
+        # Even if the second call fails, return the error message.
+        assistant_response = error_message
 
-    history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": assistant_response}])
+    # --- History Management (Unchanged) ---
+    final_history = history + [
+        {"role": "user", "content": user_message},
+        {"role": "assistant", "content": assistant_response}
+    ]
     
-    # Simple history pruning
-    while len(json.dumps(history)) > MAX_TOTAL_JSON_LEN and len(history) > 4:
-        history.pop(0)
+    # Prune history if it gets too long
+    while len(json.dumps(final_history)) > MAX_TOTAL_JSON_LEN and len(final_history) > 2:
+        final_history = final_history[2:]
 
-    return {"assistant": assistant_response, "history": history}
-
+    return {"assistant": assistant_response, "history": final_history}
 
 # --- 6. Example Usage ---
 if __name__ == "__main__":
